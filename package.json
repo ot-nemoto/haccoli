@@ -1,0 +1,29 @@
+{
+  "name": "haccoli",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "web:dev": "npm run dev -w @haccoli/web",
+    "web:build": "npm run build -w @haccoli/web",
+    "cdk": "npm run cdk -w @haccoli/infra --",
+    "deploy": "npm run web:build && npm run cdk -- deploy",
+    "admin": "npm run start -w @haccoli/admin-cli --"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.8",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}
