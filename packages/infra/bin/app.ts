@@ -1,20 +1,36 @@
 import { fileURLToPath } from "node:url";
 import { App, Tags } from "aws-cdk-lib";
-import { loadConfig } from "../lib/config.js";
+import { CiStack } from "../lib/ci-stack.js";
+import { loadConfig, loadEnvName } from "../lib/config.js";
 import { HaccoliStack } from "../lib/haccoli-stack.js";
 
 const app = new App();
-const config = loadConfig((key) => app.node.tryGetContext(key));
+const ctx = (key: string) => app.node.tryGetContext(key);
+const envName = loadEnvName(ctx);
 
-const stack = new HaccoliStack(app, `Haccoli-${config.envName}`, {
-  config,
-  webDistDir: fileURLToPath(new URL("../../web/dist", import.meta.url)),
-  env: {
-    account: process.env.CDK_DEFAULT_ACCOUNT,
-    // CDK CLI が注入する既定リージョン（未設定時は us-east-1）に左右されないよう明示する
-    region: process.env.HACCOLI_REGION ?? "ap-northeast-1",
-  },
-});
+const env = {
+  account: process.env.CDK_DEFAULT_ACCOUNT,
+  // CDK CLI が注入する既定リージョン（未設定時は us-east-1）に左右されないよう明示する
+  region: process.env.HACCOLI_REGION ?? "ap-northeast-1",
+};
+
+let stack: HaccoliStack | CiStack;
+if (ctx("ci") === "true" || ctx("ci") === true) {
+  // GitHub Actions 用デプロイロール（-c ci=true のときのみ。初回に管理者が手動デプロイ）
+  stack = new CiStack(app, `Haccoli-ci-${envName}`, {
+    env,
+    envName,
+    githubRepo: (ctx("githubRepo") as string | undefined) ?? "ot-nemoto/haccoli",
+    existingOidcProviderArn: ctx("oidcProviderArn") as string | undefined,
+  });
+} else {
+  const config = loadConfig(ctx);
+  stack = new HaccoliStack(app, `Haccoli-${config.envName}`, {
+    env,
+    config,
+    webDistDir: fileURLToPath(new URL("../../web/dist", import.meta.url)),
+  });
+}
 
 Tags.of(stack).add("app", "haccoli");
-Tags.of(stack).add("env", config.envName);
+Tags.of(stack).add("env", envName);

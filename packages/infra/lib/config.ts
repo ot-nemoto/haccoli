@@ -17,11 +17,16 @@ export interface EnvConfig {
  * 環境ごとの設定。送信元アドレスはまだ決まっていないため、
  * cdk のコンテキスト（-c fromEmail=...）または環境変数 HACCOLI_FROM_EMAIL で与える。
  */
-export function loadConfig(get: (key: string) => unknown): EnvConfig {
+export function loadEnvName(get: (key: string) => unknown): EnvName {
   const envName = (get("env") ?? "dev") as string;
   if (envName !== "dev" && envName !== "prod") {
     throw new Error(`env は dev または prod を指定してください: ${envName}`);
   }
+  return envName;
+}
+
+export function loadConfig(get: (key: string) => unknown): EnvConfig {
+  const envName = loadEnvName(get);
   const fromEmail = (get("fromEmail") as string | undefined) ?? process.env.HACCOLI_FROM_EMAIL;
   if (!fromEmail) {
     throw new Error(

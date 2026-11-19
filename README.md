@@ -22,14 +22,24 @@ npm test            # ユニットテスト
 npm run lint        # Biome
 ```
 
-## dev 環境の構築手順
+## デプロイ（GitHub Actions）
 
-### 1. 前提
+| ブランチ  | デプロイ先 | 備考                                                |
+| --------- | ---------- | --------------------------------------------------- |
+| `develop` | dev        | push で自動デプロイ                                 |
+| `main`    | prod       | push で自動デプロイ（Environment の承認設定を推奨） |
 
-- AWS 認証情報（`aws configure sso` → `aws sso login --profile <profile>`、`export AWS_PROFILE=<profile>`）
-- リージョンは既定で `ap-northeast-1`（変更する場合は CDK・CLI とも `HACCOLI_REGION` を設定）
+- `.github/workflows/deploy.yml`: lint / 型チェック / テスト → SPA ビルド → `cdk deploy`。手動実行（workflow_dispatch）も可能
+- `.github/workflows/ci.yml`: PR で lint / 型チェック / テスト / `cdk synth`
+- AWS 認証は OIDC（GitHub にアクセスキーを置かない）
+- 画面 URL は当面 CloudFront の既定ドメイン（`https://xxxx.cloudfront.net`）。デプロイジョブのサマリーに表示される
 
-### 2. SES の送信元アドレスを検証する
+### 初回セットアップ（環境ごとに 1 回、管理者がローカルで実施）
+
+前提: AWS 認証情報（`aws configure sso` → `aws sso login --profile <profile>`、`export AWS_PROFILE=<profile>`）。
+リージョンは既定で `ap-northeast-1`（変更する場合は CDK・CLI とも `HACCOLI_REGION` を設定）。
+
+#### 1. SES の送信元アドレスを検証する
 
 Cognito の Email OTP は SES 経由の送信が必須。送信元ドメインは未決定のため、dev では個人などのメールアドレスを送信元として検証する。
 
@@ -38,19 +48,37 @@ aws sesv2 create-email-identity --email-identity sender@example.com
 # 届いた確認メールのリンクをクリック
 ```
 
-SES がサンドボックスの間は **受信者のアドレスも検証が必要**。テストで使う候補者・採点者のアドレスも同様に `create-email-identity` で検証する。
+SES がサンドボックスの間は **受信者のアドレスも検証が必要**。テストで使う候補者・採点者のアドレスも同様に検証する。
 
-### 3. デプロイ
+#### 2. CDK ブートストラップと GitHub 用デプロイロールの作成
 
 ```bash
-npm run cdk -- bootstrap            # 初回のみ（アカウント/リージョンごと）
-export HACCOLI_FROM_EMAIL=sender@example.com
-npm run deploy -- -c env=dev
+npm ci
+npm run cdk -- bootstrap aws://<ACCOUNT_ID>/ap-northeast-1
+npm run cdk -- deploy Haccoli-ci-dev -c env=dev -c ci=true
+# 出力 DeployRoleArn を控える
 ```
 
-出力の `WebUrl` が画面の URL。
+同じ AWS アカウントに GitHub の OIDC プロバイダが既にある場合（例: prod を同一アカウントに作る 2 回目）は
+`-c oidcProviderArn=arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com` を付ける。
 
-### 4. ユーザー登録とログイン確認
+#### 3. GitHub の Environment を設定する
+
+リポジトリの Settings → Environments で `dev`（prod の場合は `prod`）を作成し、以下を設定する。
+
+| 種別                | 名前                 | 値                                      |
+| ------------------- | -------------------- | --------------------------------------- |
+| Variable            | `AWS_ROLE_ARN`       | 手順 2 の `DeployRoleArn`               |
+| Variable            | `HACCOLI_FROM_EMAIL` | 手順 1 で検証した送信元アドレス         |
+| Variable（任意）    | `HACCOLI_REGION`     | 既定 `ap-northeast-1`                   |
+| Deployment branches | —                    | dev: `develop`、prod: `main` のみに制限 |
+| Required reviewers  | —                    | prod は設定を推奨                       |
+
+#### 4. デプロイ
+
+`develop` に push するとデプロイされる。
+
+#### 5. ユーザー登録とログイン確認
 
 ```bash
 npm run admin -- -e dev candidate:add --email cand@example.com --name "候補 太郎"
@@ -60,6 +88,13 @@ npm run admin -- -e dev candidate:list
 
 - 候補者: `<WebUrl>/login`
 - 採点者: `<WebUrl>/grader/login`
+
+### ローカルからのデプロイ（緊急時など）
+
+```bash
+export HACCOLI_FROM_EMAIL=sender@example.com
+npm run deploy -- Haccoli-dev -c env=dev
+```
 
 ### ローカルで SPA を動かす
 

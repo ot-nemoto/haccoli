@@ -382,6 +382,7 @@ stateDiagram-v2
 | ログ         | 構造化ログ（操作者 sub・操作・対象 ID）。個人情報・回答本文はログに出さない                                                                                                        |
 | 監視         | Lambda エラー / API 5xx / 期限処理失敗 / SES バウンス率の CloudWatch アラーム → メール通知                                                                                         |
 | 環境         | `dev` / `prod` の 2 環境（AWS アカウント分離を推奨）                                                                                                                               |
+| デプロイ     | GitHub Actions（OIDC で AWS ロールを引き受け、アクセスキーは保持しない）。`develop` → dev、`main` → prod。当面は CloudFront 既定ドメインで公開                                     |     |
 | 個人情報     | 不採用者データの保持期間を決め、`user:purge` で削除                                                                                                                                |
 
 ### 10.1 概算コスト（月間候補者数十〜数百名想定）

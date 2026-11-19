@@ -4,3 +4,4 @@ cdk.out/
 *.tsbuildinfo
 .env*
 packages/web/public/config.json
+cdk-outputs.json

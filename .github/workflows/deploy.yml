@@ -1,0 +1,92 @@
+name: Deploy
+
+on:
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: デプロイ先
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      env: ${{ steps.env.outputs.env }}
+    steps:
+      - id: env
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_ENV: ${{ inputs.environment }}
+          REF: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then env="$INPUT_ENV"
+          elif [ "$REF" = "main" ]; then env=prod
+          else env=dev; fi
+          if [ "$env" = "prod" ] && [ "$REF" != "main" ]; then
+            echo "::error::prod へは main ブランチからのみデプロイできます"; exit 1
+          fi
+          echo "env=$env" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # GitHub の Environment（dev / prod）ごとに変数・承認・ブランチ制限を設定する
+    environment:
+      name: ${{ needs.resolve.outputs.env }}
+      url: ${{ steps.outputs.outputs.web_url }}
+    concurrency:
+      group: deploy-${{ needs.resolve.outputs.env }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # OIDC で AWS ロールを引き受ける
+    env:
+      ENV_NAME: ${{ needs.resolve.outputs.env }}
+      HACCOLI_REGION: ${{ vars.HACCOLI_REGION || 'ap-northeast-1' }}
+      HACCOLI_FROM_EMAIL: ${{ vars.HACCOLI_FROM_EMAIL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run web:build
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.HACCOLI_REGION }}
+
+      - name: CDK deploy
+        run: >-
+          npm run cdk -- deploy "Haccoli-$ENV_NAME"
+          -c env="$ENV_NAME"
+          --require-approval never
+          --outputs-file cdk-outputs.json
+
+      - id: outputs
+        name: Show outputs
+        working-directory: packages/infra
+        run: |
+          url=$(jq -r --arg s "Haccoli-$ENV_NAME" '.[$s].WebUrl' cdk-outputs.json)
+          echo "web_url=$url" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Haccoli-$ENV_NAME"
+            echo ""
+            echo "| | URL |"
+            echo "|---|---|"
+            echo "| 候補者ログイン | $url/login |"
+            echo "| 採点者ログイン | $url/grader/login |"
+          } >> "$GITHUB_STEP_SUMMARY"
