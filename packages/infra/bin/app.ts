@@ -20,7 +20,12 @@ if (ctx("ci") === "true" || ctx("ci") === true) {
   stack = new CiStack(app, `Haccoli-ci-${envName}`, {
     env,
     envName,
-    githubRepo: (ctx("githubRepo") as string | undefined) ?? "ot-nemoto/haccoli",
+    // 従来形式と immutable subject 形式（リポジトリ設定で有効）の両方を許可する
+    subjectPrefixes: [
+      `repo:${(ctx("githubRepo") as string | undefined) ?? "ot-nemoto/haccoli"}`,
+      (ctx("githubSubjectPrefix") as string | undefined) ??
+        "repo:ot-nemoto@41175383/haccoli@1464083865",
+    ],
     existingOidcProviderArn: ctx("oidcProviderArn") as string | undefined,
   });
 } else {
