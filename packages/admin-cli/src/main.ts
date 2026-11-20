@@ -5,6 +5,7 @@ import { disableUser, listUsers, type Role, registerUser } from "@haccoli/core";
 import { Command } from "commander";
 import { confirmIfProd } from "./confirm.js";
 import { createContext } from "./context.js";
+import { addExamCommands } from "./exams.js";
 
 const program = new Command()
   .name("haccoli-admin")
@@ -62,6 +63,7 @@ function addUserCommands(role: Role, label: string) {
 
 addUserCommands("candidate", "候補者");
 addUserCommands("grader", "採点者");
+addExamCommands(program, globals);
 
 program
   .command("web:config")

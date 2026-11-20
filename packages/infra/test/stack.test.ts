@@ -70,7 +70,7 @@ describe("SPA 書き換え関数", () => {
 });
 
 describe("API", () => {
-  it("Lambda には DynamoDB の GetItem のみ付与する", () => {
+  it("Lambda の DynamoDB 権限は必要な操作のみ（Scan・削除・一括取得なし）", () => {
     const policies = template.findResources("AWS::IAM::Policy", {
       Properties: { PolicyName: Match.stringLikeRegexp("ApiHandler") },
     });
@@ -79,7 +79,13 @@ describe("API", () => {
         Array.isArray(s.Action) ? s.Action : [s.Action],
       ),
     );
-    expect(actions.filter((a: string) => a.startsWith("dynamodb:"))).toEqual(["dynamodb:GetItem"]);
+    expect(actions.filter((a: string) => a.startsWith("dynamodb:")).sort()).toEqual([
+      "dynamodb:ConditionCheckItem",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:Query",
+      "dynamodb:UpdateItem",
+    ]);
   });
 
   it("ステージ全体のスロットリングはコスト上限として十分高い", () => {

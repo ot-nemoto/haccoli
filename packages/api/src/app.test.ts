@@ -118,7 +118,7 @@ describe("ロール別ルート", () => {
 
   it("候補者は /candidate/* を通過し（未実装ルートは 404）、/grader/* は 403", async () => {
     ddbMock.on(GetCommand).resolves({ Item: candidate });
-    expect((await call("/api/candidate/attempts", accessClaims())).status).toBe(404);
+    expect((await call("/api/candidate/nope", accessClaims())).status).toBe(404);
     expect((await call("/api/grader/assignments", accessClaims())).status).toBe(403);
   });
 

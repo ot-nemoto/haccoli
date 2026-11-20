@@ -1,0 +1,40 @@
+{
+  "examId": "sample-2026",
+  "title": "サンプル課題（動作確認用）",
+  "intro": "intro.md",
+  "questions": [
+    {
+      "qid": "q1",
+      "type": "text",
+      "body": "questions/q1.md",
+      "maxLength": 4000,
+      "rubric": { "body": "rubrics/q1.md", "points": 50 }
+    },
+    {
+      "qid": "q2",
+      "type": "choice",
+      "body": "questions/q2.md",
+      "multiple": false,
+      "options": [
+        { "id": "a", "label": "GET" },
+        { "id": "b", "label": "POST" },
+        { "id": "c", "label": "PUT" },
+        { "id": "d", "label": "PATCH" }
+      ],
+      "rubric": { "correct": ["c"], "points": 20 }
+    },
+    {
+      "qid": "q3",
+      "type": "choice",
+      "body": "questions/q3.md",
+      "multiple": true,
+      "options": [
+        { "id": "a", "label": "パスワードを平文でログに出力する" },
+        { "id": "b", "label": "SQL をプレースホルダで組み立てる" },
+        { "id": "c", "label": "出力時に HTML エスケープする" },
+        { "id": "d", "label": "認可チェックを画面側だけで行う" }
+      ],
+      "rubric": { "correct": ["b", "c"], "points": 30 }
+    }
+  ]
+}

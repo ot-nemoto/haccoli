@@ -1,15 +1,18 @@
 import { type FormEvent, useState } from "react";
-import { Navigate, useNavigate } from "react-router";
+import { Navigate, useLocation, useNavigate } from "react-router";
 import { ApiError } from "../api.js";
 import { useAuth, WrongRoleError } from "../auth/AuthContext.js";
 import { describeError, startEmailOtp, verifyEmailOtp } from "../auth/cognito.js";
-import { ROLE_ROUTES, type Role } from "../auth/roles.js";
+import { ROLE_ROUTES, type Role, safeReturnPath } from "../auth/roles.js";
 
 type Step = { kind: "email" } | { kind: "code"; email: string; session: string };
 
 export function LoginPage(props: { userRole: Role }) {
   const { config, session, signIn } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const state = location.state as { from?: unknown; reason?: string } | null;
+  const returnTo = safeReturnPath(props.userRole, state?.from);
   const routes = ROLE_ROUTES[props.userRole];
 
   const [step, setStep] = useState<Step>({ kind: "email" });
@@ -19,7 +22,7 @@ export function LoginPage(props: { userRole: Role }) {
   const [busy, setBusy] = useState(false);
 
   if (session?.user.role === props.userRole) {
-    return <Navigate to={routes.home} replace />;
+    return <Navigate to={returnTo} replace />;
   }
 
   const onSubmitEmail = async (e: FormEvent) => {
@@ -77,12 +80,17 @@ export function LoginPage(props: { userRole: Role }) {
       }
       throw err;
     }
-    navigate(routes.home, { replace: true });
+    navigate(returnTo, { replace: true });
   };
 
   return (
     <main className="card">
       <h1>{routes.label} ログイン</h1>
+      {state?.reason === "expired" && (
+        <p className="notice">
+          ログインの有効期限が切れました。再度ログインしてください。入力途中の回答はこのタブに一時保存されています。
+        </p>
+      )}
       {step.kind === "email" ? (
         <form onSubmit={onSubmitEmail}>
           <p>登録されたメールアドレスを入力してください。パスコードをメールでお送りします。</p>

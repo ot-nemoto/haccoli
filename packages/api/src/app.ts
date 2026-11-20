@@ -1,6 +1,8 @@
+import { NotFoundError, StateError, ValidationError, VersionConflictError } from "@haccoli/core";
 import type { ApiErrorBody, MeResponse } from "@haccoli/shared";
 import { Hono } from "hono";
 import { type AppEnv, authenticate, requireRole } from "./auth.js";
+import { candidateRoutes } from "./candidate.js";
 import type { ApiDeps } from "./deps.js";
 import { ApiError } from "./errors.js";
 
@@ -31,8 +33,12 @@ export function createApp(deps: ApiDeps) {
   });
 
   app.onError((err, c) => {
-    if (err instanceof ApiError) {
-      return c.json<ApiErrorBody>({ error: { code: err.code, message: err.message } }, err.status);
+    const known = toApiError(err);
+    if (known) {
+      return c.json<ApiErrorBody>(
+        { error: { code: known.code, message: known.message } },
+        known.status,
+      );
     }
     console.error(JSON.stringify({ msg: "unhandled", name: err.name, message: err.message }));
     return c.json<ApiErrorBody>(
@@ -55,6 +61,19 @@ export function createApp(deps: ApiDeps) {
   // ロール別のルート。各ルートのリソース単位の認可は ensureOwned で行う
   app.use("/candidate/*", requireRole("candidate"));
   app.use("/grader/*", requireRole("grader"));
+  app.route("/candidate", candidateRoutes(deps));
 
   return app;
+}
+
+/** ドメインエラーを API のエラーに変換する。想定外のエラーは undefined（500 にする） */
+function toApiError(err: Error): ApiError | undefined {
+  if (err instanceof ApiError) return err;
+  if (err instanceof NotFoundError) return new ApiError(404, "NOT_FOUND", err.message);
+  if (err instanceof ValidationError) return new ApiError(400, "VALIDATION", err.message);
+  if (err instanceof VersionConflictError) {
+    return new ApiError(409, "VERSION_CONFLICT", err.message);
+  }
+  if (err instanceof StateError) return new ApiError(409, "INVALID_STATE", err.message);
+  return undefined;
 }
