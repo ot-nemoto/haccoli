@@ -1,0 +1,20 @@
+{
+  "name": "@haccoli/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1172.0",
+    "@aws-sdk/lib-dynamodb": "^3.1172.0",
+    "@haccoli/core": "*",
+    "@haccoli/shared": "*",
+    "hono": "^4.13.19"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.164",
+    "aws-sdk-client-mock": "^4.1.0"
+  }
+}

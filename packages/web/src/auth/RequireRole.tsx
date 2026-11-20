@@ -8,7 +8,7 @@ import { isExpired } from "./session.js";
 export function RequireRole(props: { userRole: Role; children: ReactNode }) {
   const { session } = useAuth();
   const routes = ROLE_ROUTES[props.userRole];
-  if (!session || isExpired(session) || !session.user.groups.includes(props.userRole)) {
+  if (!session || isExpired(session) || session.user.role !== props.userRole) {
     return <Navigate to={routes.login} replace />;
   }
   return <>{props.children}</>;

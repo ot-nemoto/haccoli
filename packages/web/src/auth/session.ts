@@ -1,11 +1,8 @@
+import type { MeResponse } from "@haccoli/shared";
 import type { AuthTokens } from "./cognito.js";
 
-export interface SessionUser {
-  sub: string;
-  email: string;
-  name: string;
-  groups: string[];
-}
+/** ログイン中の利用者。ロール・氏名は /api/me（サーバー側の登録情報）を正とする */
+export type SessionUser = MeResponse;
 
 export interface Session {
   tokens: AuthTokens;
@@ -18,27 +15,14 @@ export interface Session {
 // 再訪時は必ず OTP による再ログインとなる（要件）。localStorage は使わない。
 const STORAGE_KEY = "haccoli.session";
 
-export function decodeJwtPayload(token: string): Record<string, unknown> {
-  const part = token.split(".")[1];
-  if (!part) throw new Error("JWT の形式が不正です");
-  const base64 = part.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
-  const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
-}
-
-/** ID トークンからセッションを組み立てる（署名検証はサーバー側の責務。ここでは表示・画面遷移用） */
-export function createSession(tokens: AuthTokens, now: number = Date.now()): Session {
-  const claims = decodeJwtPayload(tokens.idToken);
-  const groups = claims["cognito:groups"];
+export function createSession(
+  tokens: AuthTokens,
+  user: SessionUser,
+  now: number = Date.now(),
+): Session {
   return {
     tokens,
-    user: {
-      sub: String(claims.sub),
-      email: String(claims.email ?? ""),
-      name: String(claims.name ?? ""),
-      groups: Array.isArray(groups) ? groups.map(String) : [],
-    },
+    user: { sub: user.sub, name: user.name, role: user.role },
     expiresAt: now + tokens.expiresIn * 1000,
   };
 }
@@ -57,6 +41,8 @@ export function loadSession(): Session | undefined {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     if (!raw) return undefined;
     const session = JSON.parse(raw) as Session;
+    // 旧形式（ID トークン由来の groups を持つ）セッションは破棄して再ログインさせる
+    if (!session.user?.role) return undefined;
     return isExpired(session) ? undefined : session;
   } catch {
     return undefined;
