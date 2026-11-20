@@ -6,12 +6,14 @@
 
 ## 構成
 
-| パッケージ           | 内容                                                        |
-| -------------------- | ----------------------------------------------------------- |
-| `packages/core`      | ドメインロジック（ユーザー登録など）。API と管理 CLI で共有 |
-| `packages/infra`     | AWS CDK（Cognito / DynamoDB / S3 + CloudFront）             |
-| `packages/web`       | React + Vite SPA（候補者・採点者画面）                      |
-| `packages/admin-cli` | 管理者用 CLI                                                |
+| パッケージ           | 内容                                                                         |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `packages/core`      | ドメインロジック（ユーザー登録など）。API と管理 CLI で共有                  |
+| `packages/shared`    | API のリクエスト・レスポンス型。API と SPA で共有                            |
+| `packages/api`       | API（Lambda + Hono）。CloudFront の `/api/*` から API Gateway 経由で呼ばれる |
+| `packages/infra`     | AWS CDK（Cognito / DynamoDB / API Gateway + Lambda / S3 + CloudFront）       |
+| `packages/web`       | React + Vite SPA（候補者・採点者画面）                                       |
+| `packages/admin-cli` | 管理者用 CLI                                                                 |
 
 ## 開発コマンド
 
@@ -100,7 +102,8 @@ npm run deploy -- Haccoli-dev -c env=dev
 
 ```bash
 npm run admin -- -e dev web:config   # packages/web/public/config.json を生成
-npm run web:dev                      # http://localhost:5173
+# /api はデプロイ済み環境へプロキシする（WebUrl を指定）
+HACCOLI_WEB_URL=https://xxxx.cloudfront.net npm run web:dev   # http://localhost:5173
 ```
 
 ## 管理 CLI

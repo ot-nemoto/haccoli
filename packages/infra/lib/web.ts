@@ -13,9 +13,23 @@ export interface WebProps {
   distDir: string;
   /** SPA が起動時に読み込む /config.json の内容 */
   runtimeConfig: Record<string, string>;
-  /** CSP の connect-src に許可するオリジン（Cognito / API） */
+  /** CSP の connect-src に許可するオリジン（Cognito）。API は同一オリジン（/api/*） */
   connectSources: string[];
+  /** /api/* の転送先（API Gateway HTTP API のドメイン） */
+  apiOriginDomain: string;
 }
+
+/**
+ * SPA のクライアントサイドルーティング（/exam 等）を index.html に書き換える。
+ * カスタムエラーレスポンス（403/404 → index.html）はディストリビューション全体に効き、
+ * API の 403/404 まで HTML に化けるため使わない。拡張子のないパスのみ書き換える。
+ */
+const SPA_REWRITE = `function handler(event) {
+  var request = event.request;
+  var last = request.uri.split("/").pop();
+  if (last.indexOf(".") === -1) request.uri = "/index.html";
+  return request;
+}`;
 
 /** SPA 配信（S3 + CloudFront, OAC）。docs/design.md §3 */
 export class Web extends Construct {
@@ -67,6 +81,11 @@ export class Web extends Construct {
       },
     });
 
+    const spaRewrite = new cloudfront.Function(this, "SpaRewrite", {
+      code: cloudfront.FunctionCode.fromInline(SPA_REWRITE),
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+    });
+
     this.distribution = new cloudfront.Distribution(this, "Distribution", {
       defaultRootObject: "index.html",
       defaultBehavior: {
@@ -74,14 +93,23 @@ export class Web extends Construct {
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         responseHeadersPolicy: headers,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        functionAssociations: [
+          { function: spaRewrite, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+        ],
       },
-      // SPA のクライアントサイドルーティング（/exam 等）を index.html にフォールバック
-      errorResponses: [403, 404].map((httpStatus) => ({
-        httpStatus,
-        responseHttpStatus: 200,
-        responsePagePath: "/index.html",
-        ttl: Duration.seconds(0),
-      })),
+      additionalBehaviors: {
+        "/api/*": {
+          origin: new origins.HttpOrigin(props.apiOriginDomain, {
+            protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+          }),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          // API はキャッシュしない。全ビューアーヘッダー転送のポリシーなら Authorization も転送される
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+          responseHeadersPolicy: headers,
+        },
+      },
       // TODO: 独自ドメイン決定後に certificate / domainNames / minimumProtocolVersion(TLS1.2) を設定
     });
 

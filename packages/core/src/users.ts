@@ -9,6 +9,7 @@ import {
 } from "@aws-sdk/client-cognito-identity-provider";
 import {
   type DynamoDBDocumentClient,
+  GetCommand,
   PutCommand,
   QueryCommand,
   ScanCommand,
@@ -132,6 +133,17 @@ export async function registerUser(
   }
 
   return profile;
+}
+
+/** Cognito の sub（JWT の sub クレーム）からプロフィールを取得する。API の認可で使う */
+export async function getUserBySub(
+  deps: Pick<UserDeps, "ddb" | "tableName">,
+  sub: string,
+): Promise<UserProfile | undefined> {
+  const res = await deps.ddb.send(
+    new GetCommand({ TableName: deps.tableName, Key: keys.user(sub), ConsistentRead: true }),
+  );
+  return res.Item ? toProfile(res.Item) : undefined;
 }
 
 export async function findUserByEmail(

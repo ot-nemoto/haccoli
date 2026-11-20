@@ -12,7 +12,8 @@
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1172.0",
     "@aws-sdk/client-dynamodb": "^3.1172.0",
-    "@aws-sdk/lib-dynamodb": "^3.1172.0"
+    "@aws-sdk/lib-dynamodb": "^3.1172.0",
+    "@haccoli/shared": "*"
   },
   "devDependencies": {
     "aws-sdk-client-mock": "^4.1.0"

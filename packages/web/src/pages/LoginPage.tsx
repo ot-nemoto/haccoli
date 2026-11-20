@@ -1,13 +1,14 @@
 import { type FormEvent, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
-import { useAuth } from "../auth/AuthContext.js";
+import { ApiError } from "../api.js";
+import { useAuth, WrongRoleError } from "../auth/AuthContext.js";
 import { describeError, startEmailOtp, verifyEmailOtp } from "../auth/cognito.js";
 import { ROLE_ROUTES, type Role } from "../auth/roles.js";
 
 type Step = { kind: "email" } | { kind: "code"; email: string; session: string };
 
 export function LoginPage(props: { userRole: Role }) {
-  const { config, session, signIn, signOut } = useAuth();
+  const { config, session, signIn } = useAuth();
   const navigate = useNavigate();
   const routes = ROLE_ROUTES[props.userRole];
 
@@ -17,7 +18,7 @@ export function LoginPage(props: { userRole: Role }) {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
-  if (session?.user.groups.includes(props.userRole)) {
+  if (session?.user.role === props.userRole) {
     return <Navigate to={routes.home} replace />;
   }
 
@@ -65,13 +66,16 @@ export function LoginPage(props: { userRole: Role }) {
   };
 
   const complete = async (tokens: Parameters<typeof signIn>[0]) => {
-    const s = signIn(tokens);
-    if (!s.user.groups.includes(props.userRole)) {
-      // 候補者が採点者画面から（またはその逆）ログインした場合は拒否する
-      await signOut();
+    try {
+      await signIn(tokens, props.userRole);
+    } catch (err) {
       setStep({ kind: "email" });
-      setError("このアカウントではこの画面にログインできません。");
-      return;
+      if (err instanceof WrongRoleError || (err instanceof ApiError && err.status === 403)) {
+        // 候補者が採点者画面から（またはその逆）ログインした場合、無効化済みの場合は拒否する
+        setError("このアカウントではこの画面にログインできません。");
+        return;
+      }
+      throw err;
     }
     navigate(routes.home, { replace: true });
   };
