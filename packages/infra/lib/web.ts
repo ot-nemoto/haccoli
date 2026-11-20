@@ -24,7 +24,7 @@ export interface WebProps {
  * カスタムエラーレスポンス（403/404 → index.html）はディストリビューション全体に効き、
  * API の 403/404 まで HTML に化けるため使わない。拡張子のないパスのみ書き換える。
  */
-const SPA_REWRITE = `function handler(event) {
+export const SPA_REWRITE = `function handler(event) {
   var request = event.request;
   var last = request.uri.split("/").pop();
   if (last.indexOf(".") === -1) request.uri = "/index.html";

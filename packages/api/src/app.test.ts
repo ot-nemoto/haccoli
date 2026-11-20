@@ -56,6 +56,24 @@ describe("GET /api/me", () => {
     });
   });
 
+  it("レスポンスは常に Cache-Control: no-store（エラー時も）", async () => {
+    expect((await call("/api/me", accessClaims())).headers.get("Cache-Control")).toBe("no-store");
+    expect((await call("/api/me")).headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("ログには実パスとルートを出し、email・氏名は出さない", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await call("/api/grader/attempts/a-1", accessClaims());
+    const line = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+    expect(line).toMatchObject({
+      path: "/api/grader/attempts/a-1",
+      route: "/api/grader/*",
+      status: 403,
+      sub: "sub-c",
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/cand@example\.com|山田/);
+  });
+
   it("クレームがなければ 401", async () => {
     const res = await call("/api/me");
     expect(res.status).toBe(401);

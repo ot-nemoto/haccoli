@@ -62,8 +62,8 @@ export class Api extends Construct {
       },
     });
     this.handler.addEnvironment("NODE_OPTIONS", "--enable-source-maps");
-    // Step 2 は参照のみ。書き込みが必要になった時点で grantReadWriteData に切り替える
-    props.table.grantReadData(this.handler);
+    // 最小権限: 使う操作だけを付与し、機能追加に合わせて増やす（Step 2 は User の取得のみ）
+    props.table.grant(this.handler, "dynamodb:GetItem");
 
     // 署名・有効期限・client_id（アクセストークン）/ aud（ID トークン）を検証する。
     // トークン種別（アクセストークンのみ許可）は Lambda 側で確認する
@@ -82,9 +82,11 @@ export class Api extends Construct {
       authorizer,
     });
 
-    // 想定トラフィック（数十〜数百名）に対して十分な上限。暴走・濫用時のコスト上限を兼ねる
+    // ステージ全体（全利用者共有）の上限。低すぎると未認証リクエストの連打だけで正規利用者まで
+    // 429 になる（DoS の増幅）ため、暴走時のコスト上限として十分高くする。
+    // 送信元 IP 単位の制限は WAF のレートベースルールで行う（docs/design.md §10）
     const stage = this.httpApi.defaultStage?.node.defaultChild as apigw.CfnStage;
-    stage.defaultRouteSettings = { throttlingRateLimit: 20, throttlingBurstLimit: 40 };
+    stage.defaultRouteSettings = { throttlingRateLimit: 200, throttlingBurstLimit: 400 };
   }
 
   /** CloudFront のオリジンに指定するドメイン */

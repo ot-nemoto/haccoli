@@ -122,7 +122,11 @@ export async function verifyEmailOtp(
   throw new CognitoError("UnexpectedChallenge", "認証を完了できませんでした");
 }
 
-/** リフレッシュトークンを失効させる（関連するアクセストークンも無効になる） */
+/**
+ * リフレッシュトークンを失効させる。関連するアクセストークンは Cognito の API では使えなくなるが、
+ * API Gateway の JWT オーソライザーは署名と有効期限しか見ないため、haccoli の API には
+ * 有効期限（最長 60 分）まで通る（docs/design.md §4.2）。
+ */
 export async function revokeToken(config: RuntimeConfig, refreshToken: string): Promise<void> {
   await call(config, "RevokeToken", { ClientId: config.userPoolClientId, Token: refreshToken });
 }

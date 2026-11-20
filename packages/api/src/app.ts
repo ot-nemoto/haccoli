@@ -14,11 +14,15 @@ export function createApp(deps: ApiDeps) {
   app.use(async (c, next) => {
     const started = Date.now();
     await next();
+    // 認証付きレスポンスを中間キャッシュ・ブラウザに残さない
+    c.res.headers.set("Cache-Control", "no-store");
     console.log(
       JSON.stringify({
         msg: "request",
         method: c.req.method,
-        path: c.req.routePath,
+        // 実パス（ID を含むが email 等の個人情報は含まない）と、一致したルートのパターン
+        path: c.req.path,
+        route: c.req.routePath,
         status: c.res.status,
         sub: c.get("user")?.sub,
         ms: Date.now() - started,
