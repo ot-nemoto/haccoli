@@ -6,8 +6,13 @@ const GITHUB_OIDC_URL = "https://token.actions.githubusercontent.com";
 
 export interface CiStackProps extends StackProps {
   envName: EnvName;
-  /** owner/repo */
-  githubRepo: string;
+  /**
+   * OIDC トークンの sub の接頭辞（例: `repo:owner/repo`）。
+   * リポジトリが immutable subject を使う場合は `repo:owner@<ownerId>/repo@<repoId>` 形式になる
+   * （`gh api repos/<owner>/<repo>/actions/oidc/customization/sub` の sub_claim_prefix）。
+   * 複数指定時はいずれかに一致すれば許可する。
+   */
+  subjectPrefixes: string[];
   /** 既にアカウントに GitHub の OIDC プロバイダがある場合はその ARN（1 アカウントに 1 つしか作れない） */
   existingOidcProviderArn?: string;
 }
@@ -38,7 +43,9 @@ export class CiStack extends Stack {
       assumedBy: new iam.WebIdentityPrincipal(provider.oidcProviderArn, {
         StringEquals: {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": `repo:${props.githubRepo}:environment:${props.envName}`,
+          "token.actions.githubusercontent.com:sub": props.subjectPrefixes.map(
+            (prefix) => `${prefix}:environment:${props.envName}`,
+          ),
         },
       }),
     });
