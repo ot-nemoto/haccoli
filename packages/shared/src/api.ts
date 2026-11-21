@@ -17,6 +17,10 @@ export type ApiErrorCode =
   | "FORBIDDEN"
   | "NOT_FOUND"
   | "CONFLICT"
+  /** 楽観ロックの競合（別の画面・端末で更新された）。再読み込みが必要 */
+  | "VERSION_CONFLICT"
+  /** 受験の状態（提出済み・期限切れ・未開始など）により操作できない */
+  | "INVALID_STATE"
   | "VALIDATION"
   | "INTERNAL";
 

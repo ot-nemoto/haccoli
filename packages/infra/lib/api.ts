@@ -5,6 +5,7 @@ import {
   type aws_cognito as cognito,
   Duration,
   type aws_dynamodb as dynamodb,
+  aws_iam as iam,
   aws_apigatewayv2_integrations as integrations,
   aws_lambda as lambda,
   aws_logs as logs,
@@ -62,8 +63,20 @@ export class Api extends Construct {
       },
     });
     this.handler.addEnvironment("NODE_OPTIONS", "--enable-source-maps");
-    // 最小権限: 使う操作だけを付与し、機能追加に合わせて増やす（Step 2 は User の取得のみ）
-    props.table.grant(this.handler, "dynamodb:GetItem");
+    // 最小権限: 使う操作だけを付与し、機能追加に合わせて増やす。
+    // Scan・DeleteItem・BatchGet は付与しない（API から全件を読めないようにする）
+    this.handler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+        ],
+        resources: [props.table.tableArn, `${props.table.tableArn}/index/GSI1`],
+      }),
+    );
 
     // 署名・有効期限・client_id（アクセストークン）/ aud（ID トークン）を検証する。
     // トークン種別（アクセストークンのみ許可）は Lambda 側で確認する

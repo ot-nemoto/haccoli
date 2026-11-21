@@ -44,3 +44,15 @@ export async function apiFetch<T>(
 }
 
 export const getMe = (accessToken: string) => apiFetch<MeResponse>(accessToken, "/me");
+
+/** 利用者に見せるエラーメッセージ。サーバー内部のエラーは汎用メッセージにする */
+export function messageOf(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.code === "NETWORK") return "通信に失敗しました。接続を確認して再度お試しください。";
+    if (e.code === "UNAUTHORIZED")
+      return "ログインの有効期限が切れました。再度ログインしてください。";
+    if (e.status >= 500) return "エラーが発生しました。時間をおいて再度お試しください。";
+    return e.message;
+  }
+  return "エラーが発生しました。時間をおいて再度お試しください。";
+}

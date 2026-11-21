@@ -300,14 +300,17 @@ stateDiagram-v2
 
 ### 7.2 候補者（group: candidate）
 
-| Method | Path                                                       | 説明                                                           |
-| ------ | ---------------------------------------------------------- | -------------------------------------------------------------- |
-| GET    | `/candidate/attempts`                                      | 自分の受験一覧（期限・ステータス）                             |
-| GET    | `/candidate/attempts/{attemptId}`                          | 課題本文（rubric 除外）＋保存済み回答＋ステータス              |
-| POST   | `/candidate/attempts/{attemptId}/start`                    | 開始                                                           |
-| PUT    | `/candidate/attempts/{attemptId}/answers/{qid}`            | 途中保存（`version` による楽観ロック、型ごとのバリデーション） |
-| POST   | `/candidate/attempts/{attemptId}/answers/{qid}/upload-url` | ファイル提出用の署名付き POST 発行                             |
-| POST   | `/candidate/attempts/{attemptId}/submit`                   | 提出。未回答問題があれば警告（提出は可能）、以降ロック         |
+| Method | Path                                                       | 説明                                                                                                                    |
+| ------ | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/candidate/attempts`                                      | 自分の受験一覧（期限・ステータス）                                                                                      |
+| GET    | `/candidate/attempts/{attemptId}`                          | 冒頭説明＋課題本文（rubric 除外）＋保存済み回答＋ステータス。**問題・回答は開始後のみ返す**（未着手の間は冒頭説明のみ） |
+| POST   | `/candidate/attempts/{attemptId}/start`                    | 開始                                                                                                                    |
+| PUT    | `/candidate/attempts/{attemptId}/answers/{qid}`            | 途中保存（`version` による楽観ロック、型ごとのバリデーション）                                                          |
+| POST   | `/candidate/attempts/{attemptId}/answers/{qid}/upload-url` | ファイル提出用の署名付き POST 発行                                                                                      |
+| POST   | `/candidate/attempts/{attemptId}/submit`                   | 提出。未回答問題があれば警告（提出は可能）、以降ロック                                                                  |
+
+- エラーは `{ error: { code, message } }`。`404 NOT_FOUND`（他人の受験も同じ）、`400 VALIDATION`、`409 VERSION_CONFLICT`（楽観ロックの競合）、`409 INVALID_STATE`（提出済み・期限切れ・未開始など）
+- ステータスは期限処理バッチの実行前でも、期限到来済みで未提出なら `EXPIRED` として返す
 
 途中保存の UX:
 

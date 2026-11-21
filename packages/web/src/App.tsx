@@ -2,9 +2,11 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider } from "./auth/AuthContext.js";
 import { RequireRole } from "./auth/RequireRole.js";
 import type { RuntimeConfig } from "./config.js";
+import { AttemptPage } from "./pages/AttemptPage.js";
 import { CandidateHomePage } from "./pages/CandidateHomePage.js";
 import { GraderHomePage } from "./pages/GraderHomePage.js";
 import { LoginPage } from "./pages/LoginPage.js";
+import { SubmittedPage } from "./pages/SubmittedPage.js";
 
 export function App(props: { config: RuntimeConfig }) {
   return (
@@ -13,10 +15,26 @@ export function App(props: { config: RuntimeConfig }) {
         <Routes>
           <Route path="/login" element={<LoginPage userRole="candidate" />} />
           <Route
-            path="/exam/*"
+            path="/exam"
             element={
               <RequireRole userRole="candidate">
                 <CandidateHomePage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="/exam/:attemptId"
+            element={
+              <RequireRole userRole="candidate">
+                <AttemptPage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="/exam/:attemptId/done"
+            element={
+              <RequireRole userRole="candidate">
+                <SubmittedPage />
               </RequireRole>
             }
           />

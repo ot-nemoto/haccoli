@@ -6,14 +6,15 @@
 
 ## 構成
 
-| パッケージ           | 内容                                                                         |
-| -------------------- | ---------------------------------------------------------------------------- |
-| `packages/core`      | ドメインロジック（ユーザー登録など）。API と管理 CLI で共有                  |
-| `packages/shared`    | API のリクエスト・レスポンス型。API と SPA で共有                            |
-| `packages/api`       | API（Lambda + Hono）。CloudFront の `/api/*` から API Gateway 経由で呼ばれる |
-| `packages/infra`     | AWS CDK（Cognito / DynamoDB / API Gateway + Lambda / S3 + CloudFront）       |
-| `packages/web`       | React + Vite SPA（候補者・採点者画面）                                       |
-| `packages/admin-cli` | 管理者用 CLI                                                                 |
+| パッケージ           | 内容                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------ |
+| `packages/core`      | ドメインロジック（ユーザー登録など）。API と管理 CLI で共有                                            |
+| `packages/shared`    | API の型・課題定義の型。API と SPA で共有（zod スキーマは `@haccoli/shared/schemas` でサーバー側のみ） |
+| `exams/`             | 課題定義（`exam.json` + Markdown）。`exam:publish` で投入                                              |
+| `packages/api`       | API（Lambda + Hono）。CloudFront の `/api/*` から API Gateway 経由で呼ばれる                           |
+| `packages/infra`     | AWS CDK（Cognito / DynamoDB / API Gateway + Lambda / S3 + CloudFront）                                 |
+| `packages/web`       | React + Vite SPA（候補者・採点者画面）                                                                 |
+| `packages/admin-cli` | 管理者用 CLI                                                                                           |
 
 ## 開発コマンド
 
@@ -113,11 +114,22 @@ npm run admin -- -e <dev|prod> <command> [options]
 npm run admin -- --help
 ```
 
-| コマンド                                                     | 内容                            |
-| ------------------------------------------------------------ | ------------------------------- |
-| `candidate:add --email --name` / `grader:add --email --name` | 登録                            |
-| `candidate:list` / `grader:list`                             | 一覧                            |
-| `candidate:disable --email` / `grader:disable --email`       | 無効化                          |
-| `web:config`                                                 | ローカル開発用の SPA 設定を生成 |
+| コマンド                                                       | 内容                                                                |
+| -------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `candidate:add --email --name` / `grader:add --email --name`   | 登録                                                                |
+| `candidate:list` / `grader:list`                               | 一覧                                                                |
+| `candidate:disable --email` / `grader:disable --email`         | 無効化                                                              |
+| `exam:publish --dir exams/<examId> [--dry-run]`                | 課題定義を検証して投入（新しい版を作成。同じ内容なら何もしない）    |
+| `exam:list`                                                    | 課題と最新版の一覧                                                  |
+| `attempt:issue --email --exam --deadline YYYY-MM-DD [--force]` | 受験を発行（最新版、期限 = 指定日 23:59 JST。当日指定は `--force`） |
+| `attempt:list [--status]`                                      | 受験の一覧（期限切れはバッチ前でも `EXPIRED` と表示）               |
+| `web:config`                                                   | ローカル開発用の SPA 設定を生成                                     |
 
 prod に対する変更操作は確認プロンプトが出る（`-y` で省略）。
+
+### 例: サンプル課題で受験を発行する
+
+```bash
+npm run admin -- -e dev exam:publish --dir exams/sample-2026
+npm run admin -- -e dev attempt:issue --email cand@example.com --exam sample-2026 --deadline 2026-12-31
+```
