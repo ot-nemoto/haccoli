@@ -229,3 +229,29 @@ button.secondary {
   margin: 0;
   flex-basis: 100%;
 }
+
+/* ファイル提出 */
+.file-info {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0 0 1rem;
+}
+.file-info dt {
+  font-weight: 600;
+  color: #59636e;
+}
+.file-info dd {
+  margin: 0;
+}
+.file-info .hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+.file-select {
+  font-weight: normal;
+}
+.file-answer progress {
+  width: 100%;
+}

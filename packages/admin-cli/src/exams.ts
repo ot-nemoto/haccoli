@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import {
   effectiveStatus,
+  extendAttempt,
   issueAttempt,
   listAttempts,
   listExams,
@@ -82,6 +83,29 @@ export function addExamCommands(program: Command, globals: Globals) {
       console.log(`  課題:   ${a.examTitle}（${a.examId} v${a.examVersion}）`);
       console.log(`  期限:   ${jst(a.deadlineAt)}`);
       console.log(`ログイン URL: ${ctx.outputs.WebUrl}/login`);
+    });
+
+  program
+    .command("attempt:extend")
+    .description("受験期限を変更する（期限切れ EXPIRED からの復帰を含む。提出済み・取消は不可）")
+    .requiredOption("--attempt <attemptId>", "受験 ID")
+    .requiredOption("--deadline <YYYY-MM-DD>", "新しい受験期限日")
+    .option("--force", "当日を期限にすることを許可する", false)
+    .action(async (opts: { attempt: string; deadline: string; force: boolean }) => {
+      const ctx = await createContext(globals().env);
+      await confirmIfProd(
+        ctx,
+        `受験 ${opts.attempt} の期限を ${opts.deadline} に変更します。`,
+        globals().yes,
+      );
+      const { before, after } = await extendAttempt(ctx.deps, {
+        attemptId: opts.attempt,
+        deadline: opts.deadline,
+        force: opts.force,
+      });
+      console.log(`期限を変更しました: ${after.attemptId}（${after.candidateName}）`);
+      console.log(`  期限:       ${jst(before.deadlineAt)} → ${jst(after.deadlineAt)}`);
+      console.log(`  ステータス: ${before.status} → ${after.status}`);
     });
 
   program

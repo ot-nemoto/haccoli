@@ -1,7 +1,21 @@
 import type { CandidateQuestion } from "./exam.js";
 import type { AnswerContent } from "./schemas.js";
 
-export type { AnswerContent, ChoiceAnswer, SaveAnswerRequest, TextAnswer } from "./schemas.js";
+export type {
+  AnswerContent,
+  ChoiceAnswer,
+  FileAnswer,
+  SaveAnswerRequest,
+  TextAnswer,
+} from "./schemas.js";
+
+/** POST .../upload-url のレスポンス。fields と file を multipart/form-data で url に POST する */
+export interface UploadUrlResponse {
+  url: string;
+  fields: Record<string, string>;
+  fileKey: string;
+  maxBytes: number;
+}
 
 /** 受験ステータス（docs/design.md §6.3） */
 export const ATTEMPT_STATUSES = [
@@ -24,6 +38,13 @@ export const ATTEMPT_STATUS_LABELS: Record<AttemptStatus, string> = {
   GRADED: "提出済み",
   CANCELED: "取消",
 };
+
+/** PUT .../answers/{qid} のレスポンス。ファイルはサーバーが求めたサイズ・SHA-256 を含む */
+export interface SaveAnswerResponse {
+  content: AnswerContent;
+  version: number;
+  updatedAt: string;
+}
 
 export interface SavedAnswer {
   content: AnswerContent;
@@ -64,5 +85,6 @@ export function isAnswered(content: AnswerContent | undefined): boolean {
   if (!content) return false;
   if ("text" in content) return content.text.trim().length > 0;
   if ("selected" in content) return content.selected.length > 0;
+  if ("fileKey" in content) return content.fileKey.length > 0;
   return false;
 }

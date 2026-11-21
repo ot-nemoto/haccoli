@@ -204,7 +204,11 @@ describe("saveAnswer", () => {
   it("初回保存は存在しないことを条件に v1 を書き込む", async () => {
     withAttempt();
     ddbMock.on(TransactWriteCommand).resolves({});
-    await expect(save()).resolves.toEqual({ version: 1, updatedAt: NOW });
+    await expect(save()).resolves.toEqual({
+      content: { text: "abc" },
+      version: 1,
+      updatedAt: NOW,
+    });
     const items = ddbMock.commandCalls(TransactWriteCommand)[0]?.args[0].input.TransactItems;
     expect(items?.[0]?.ConditionCheck?.ExpressionAttributeValues).toMatchObject({
       ":sub": "me",

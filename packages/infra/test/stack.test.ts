@@ -101,3 +101,94 @@ describe("API", () => {
     }
   });
 });
+
+describe("提出ファイル（S3）", () => {
+  it("非公開・暗号化・バージョニング・SSL 必須で、CORS は CloudFront（と dev のローカル）からの POST のみ", () => {
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "haccoli-dev-submissions-123456789012",
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
+      VersioningConfiguration: { Status: "Enabled" },
+      BucketEncryption: Match.objectLike({}),
+      CorsConfiguration: {
+        CorsRules: [
+          Match.objectLike({
+            AllowedMethods: ["POST"],
+            AllowedOrigins: [Match.objectLike({}), "http://localhost:5173"],
+          }),
+        ],
+      },
+      LifecycleConfiguration: {
+        Rules: [Match.objectLike({ NoncurrentVersionExpiration: { NoncurrentDays: 30 } })],
+      },
+    });
+  });
+
+  it("API の S3 権限は attempts/ 配下の Put / Get / Delete のみ", () => {
+    const policies = template.findResources("AWS::IAM::Policy", {
+      Properties: { PolicyName: Match.stringLikeRegexp("ApiHandler") },
+    });
+    const statements = Object.values(policies).flatMap(
+      (p) => p.Properties.PolicyDocument.Statement as { Action: string[]; Resource: unknown }[],
+    );
+    const s3 = statements.filter((s) => [s.Action].flat().some((a) => a.startsWith("s3:")));
+    expect(s3).toHaveLength(1);
+    expect([s3[0]?.Action].flat().sort()).toEqual([
+      "s3:DeleteObject",
+      "s3:GetObject",
+      "s3:PutObject",
+    ]);
+    expect(JSON.stringify(s3[0]?.Resource)).toContain(
+      ":s3:::haccoli-dev-submissions-123456789012/attempts/*",
+    );
+  });
+
+  it("CSP の connect-src にアップロード先のバケットを含める", () => {
+    template.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", {
+      ResponseHeadersPolicyConfig: {
+        SecurityHeadersConfig: Match.objectLike({
+          ContentSecurityPolicy: {
+            ContentSecurityPolicy: Match.stringLikeRegexp(
+              "connect-src 'self' .*https://haccoli-dev-submissions-123456789012\\.s3\\.ap-northeast-1\\.amazonaws\\.com",
+            ),
+            Override: true,
+          },
+        }),
+      },
+    });
+  });
+});
+
+describe("期限処理", () => {
+  it("1 時間毎に期限処理 Lambda を起動する", () => {
+    template.hasResourceProperties("AWS::Scheduler::Schedule", {
+      ScheduleExpression: "rate(1 hour)",
+      Target: Match.objectLike({ RetryPolicy: Match.objectLike({ MaximumRetryAttempts: 2 }) }),
+    });
+  });
+
+  it("期限処理 Lambda の権限は GSI2 の Query と UpdateItem のみ", () => {
+    const policies = template.findResources("AWS::IAM::Policy", {
+      Properties: { PolicyName: Match.stringLikeRegexp("ApiExpire") },
+    });
+    const actions = Object.values(policies).flatMap((p) =>
+      p.Properties.PolicyDocument.Statement.flatMap((s: { Action: string | string[] }) =>
+        [s.Action].flat(),
+      ),
+    );
+    expect(actions.sort()).toEqual(["dynamodb:Query", "dynamodb:UpdateItem"]);
+  });
+
+  it("API の Lambda タイムアウトは HTTP API の統合タイムアウト（30 秒）未満", () => {
+    const fns = template.findResources("AWS::Lambda::Function", {
+      Properties: { Runtime: "nodejs24.x" },
+    });
+    const timeouts = Object.entries(fns).map(([id, f]) => [id, f.Properties.Timeout]);
+    const handler = timeouts.find(([id]) => String(id).startsWith("ApiHandler"));
+    expect(handler?.[1]).toBeLessThan(30);
+  });
+});

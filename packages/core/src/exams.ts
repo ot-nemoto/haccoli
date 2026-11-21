@@ -9,12 +9,15 @@ import {
 import type { ExamDefinition } from "@haccoli/shared";
 import { examDefinitionSchema } from "@haccoli/shared/schemas";
 import { ValidationError } from "./errors.js";
+import type { FileStore } from "./files.js";
 import { keys } from "./keys.js";
 
 export interface DataDeps {
   ddb: DynamoDBDocumentClient;
   tableName: string;
   now?: () => Date;
+  /** 提出ファイルの保存先（ファイル提出を扱う処理でのみ必要） */
+  files?: FileStore;
 }
 
 /** DynamoDB の 1 アイテム上限（400KB）に余裕を持たせた課題定義のサイズ上限 */

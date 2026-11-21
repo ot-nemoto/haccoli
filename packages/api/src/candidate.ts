@@ -1,5 +1,6 @@
 import {
   type AttemptRecord,
+  createUploadUrl,
   effectiveStatus,
   getAttemptExam,
   getOwnAttemptBundle,
@@ -11,11 +12,13 @@ import {
 import {
   type CandidateAttemptDetail,
   type CandidateAttemptSummary,
+  type SaveAnswerResponse,
   type SavedAnswer,
   type SubmitResponse,
   toCandidateQuestion,
+  type UploadUrlResponse,
 } from "@haccoli/shared";
-import { saveAnswerRequestSchema } from "@haccoli/shared/schemas";
+import { saveAnswerRequestSchema, uploadUrlRequestSchema } from "@haccoli/shared/schemas";
 import { Hono } from "hono";
 import type { AppEnv } from "./auth.js";
 import type { ApiDeps } from "./deps.js";
@@ -77,7 +80,20 @@ export function candidateRoutes(deps: ApiDeps) {
       content: body.data.content,
       version: body.data.version,
     });
-    return c.json(saved);
+    return c.json<SaveAnswerResponse>(saved);
+  });
+
+  app.post("/attempts/:attemptId/answers/:qid/upload-url", async (c) => {
+    const body = uploadUrlRequestSchema.safeParse(await c.req.json().catch(() => undefined));
+    if (!body.success) throw new ApiError(400, "VALIDATION", "リクエストの形式が不正です");
+    const res = await createUploadUrl(deps, {
+      attemptId: c.req.param("attemptId"),
+      candidateSub: c.get("user").sub,
+      qid: c.req.param("qid"),
+      fileName: body.data.fileName,
+      size: body.data.size,
+    });
+    return c.json<UploadUrlResponse>(res);
   });
 
   app.post("/attempts/:attemptId/submit", async (c) => {

@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import {
   aws_apigatewayv2 as apigw,
   aws_apigatewayv2_authorizers as authorizers,
@@ -7,23 +6,23 @@ import {
   type aws_dynamodb as dynamodb,
   aws_iam as iam,
   aws_apigatewayv2_integrations as integrations,
-  aws_lambda as lambda,
-  aws_logs as logs,
-  aws_lambda_nodejs as nodejs,
-  RemovalPolicy,
+  type aws_lambda_nodejs as nodejs,
   Stack,
+  aws_scheduler as scheduler,
+  aws_scheduler_targets as targets,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { EnvConfig } from "./config.js";
+import { apiFunction } from "./lambda.js";
 
 export interface ApiProps {
   config: EnvConfig;
   userPool: cognito.IUserPool;
   webClient: cognito.IUserPoolClient;
   table: dynamodb.ITableV2;
+  /** 提出ファイルのバケット名（CloudFront との循環参照を避けるため名前で受け取る） */
+  submissionsBucketName: string;
 }
-
-const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
 /**
  * API Gateway HTTP API + Lambda（Hono）。docs/design.md §3 / §7
@@ -32,37 +31,22 @@ const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 export class Api extends Construct {
   readonly httpApi: apigw.HttpApi;
   readonly handler: nodejs.NodejsFunction;
+  readonly expireFunction: nodejs.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: ApiProps) {
     super(scope, id);
 
-    const logGroup = new logs.LogGroup(this, "HandlerLogs", {
-      retention: logs.RetentionDays.ONE_MONTH,
-      removalPolicy: RemovalPolicy.DESTROY,
-    });
-
-    this.handler = new nodejs.NodejsFunction(this, "Handler", {
-      entry: `${repoRoot}packages/api/src/lambda.ts`,
-      projectRoot: repoRoot,
-      depsLockFilePath: `${repoRoot}package-lock.json`,
-      runtime: lambda.Runtime.NODEJS_24_X,
-      architecture: lambda.Architecture.ARM_64,
-      memorySize: 512,
-      timeout: Duration.seconds(10),
-      logGroup,
-      loggingFormat: lambda.LoggingFormat.JSON,
-      environment: { TABLE_NAME: props.table.tableName },
-      bundling: {
-        format: nodejs.OutputFormat.ESM,
-        target: "node24",
-        minify: true,
-        sourceMap: true,
-        // ESM バンドル内で require を使う依存に備える
-        banner:
-          "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+    this.handler = apiFunction(this, "Handler", {
+      entry: "lambda.ts",
+      environment: {
+        TABLE_NAME: props.table.tableName,
+        SUBMISSIONS_BUCKET: props.submissionsBucketName,
       },
+      // 提出ファイル（最大 20MB）の SHA-256 計算のため、CPU・ネットワーク帯域に余裕を持たせる
+      memorySize: 1024,
+      // HTTP API の統合タイムアウト（30 秒）未満にする
+      timeout: Duration.seconds(25),
     });
-    this.handler.addEnvironment("NODE_OPTIONS", "--enable-source-maps");
     // 最小権限: 使う操作だけを付与し、機能追加に合わせて増やす。
     // Scan・DeleteItem・BatchGet は付与しない（API から全件を読めないようにする）
     this.handler.addToRolePolicy(
@@ -77,6 +61,35 @@ export class Api extends Construct {
         resources: [props.table.tableArn, `${props.table.tableArn}/index/GSI1`],
       }),
     );
+    // 提出ファイル: 署名付き POST の発行（PutObject）、検証（GetObject）、差し替え時の削除
+    this.handler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+        resources: [
+          `arn:${Stack.of(this).partition}:s3:::${props.submissionsBucketName}/attempts/*`,
+        ],
+      }),
+    );
+
+    // 期限処理バッチ（§6.4）。1 時間毎に期限切れの受験を EXPIRED にする
+    const expire = apiFunction(this, "Expire", {
+      entry: "expire.ts",
+      environment: { TABLE_NAME: props.table.tableName },
+      memorySize: 256,
+      timeout: Duration.minutes(5),
+    });
+    expire.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query", "dynamodb:UpdateItem"],
+        resources: [props.table.tableArn, `${props.table.tableArn}/index/GSI2`],
+      }),
+    );
+    this.expireFunction = expire;
+    new scheduler.Schedule(this, "ExpireSchedule", {
+      description: "haccoli: expire attempts past deadline",
+      schedule: scheduler.ScheduleExpression.rate(Duration.hours(1)),
+      target: new targets.LambdaInvoke(expire, { retryAttempts: 2 }),
+    });
 
     // 署名・有効期限・client_id（アクセストークン）/ aud（ID トークン）を検証する。
     // トークン種別（アクセストークンのみ許可）は Lambda 側で確認する
