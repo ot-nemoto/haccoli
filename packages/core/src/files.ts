@@ -7,6 +7,7 @@ import {
   type S3Client,
 } from "@aws-sdk/client-s3";
 import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { NotFoundError, ValidationError } from "./errors.js";
 
 /**
@@ -21,6 +22,21 @@ export interface FileStore {
   /** アップロード済みファイルを読み、サイズ・先頭バイト・SHA-256 を返す */
   inspect(key: string, maxBytes: number): Promise<{ size: number; head: Buffer; sha256: string }>;
   delete(key: string): Promise<void>;
+  /** 採点者のダウンロード用の署名付き GET（attachment 指定） */
+  createDownloadUrl(key: string, fileName: string): Promise<string>;
+}
+
+/** 署名付き GET の有効期限（§6.2） */
+export const DOWNLOAD_URL_EXPIRES_SECONDS = 300;
+
+/**
+ * Content-Disposition: attachment。日本語名は RFC 5987 の filename* で渡し、
+ * filename には ASCII に置き換えた名前を入れる（ヘッダーインジェクション防止）。
+ */
+export function attachmentDisposition(fileName: string): string {
+  const display = displayFileName(fileName) || "submission.zip";
+  const ascii = storageFileName(display);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(display)}`;
 }
 
 /** 署名付き POST の有効期限（§6.2） */
@@ -140,6 +156,19 @@ export function s3FileStore(s3: S3Client, bucket: string): FileStore {
 
     async delete(key) {
       await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    },
+
+    async createDownloadUrl(key, fileName) {
+      return getSignedUrl(
+        s3,
+        new GetObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          ResponseContentDisposition: attachmentDisposition(fileName),
+          ResponseContentType: "application/zip",
+        }),
+        { expiresIn: DOWNLOAD_URL_EXPIRES_SECONDS },
+      );
     },
   };
 }

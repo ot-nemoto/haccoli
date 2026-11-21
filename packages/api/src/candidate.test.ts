@@ -21,6 +21,7 @@ const files = {
   })),
   inspect: vi.fn(),
   delete: vi.fn(),
+  createDownloadUrl: vi.fn(),
 };
 const app = createApp({ ddb, tableName: "t", now: () => new Date(NOW), files });
 

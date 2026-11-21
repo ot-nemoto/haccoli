@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { confirmIfProd } from "./confirm.js";
 import { createContext } from "./context.js";
 import { addExamCommands } from "./exams.js";
+import { addGradingCommands } from "./grading.js";
 
 const program = new Command()
   .name("haccoli-admin")
@@ -64,6 +65,7 @@ function addUserCommands(role: Role, label: string) {
 addUserCommands("candidate", "候補者");
 addUserCommands("grader", "採点者");
 addExamCommands(program, globals);
+addGradingCommands(program, globals);
 
 program
   .command("web:config")

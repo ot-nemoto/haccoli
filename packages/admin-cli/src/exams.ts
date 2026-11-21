@@ -8,10 +8,11 @@ import {
   loadExamDir,
   publishExam,
 } from "@haccoli/core";
-import { ATTEMPT_STATUS_LABELS, ATTEMPT_STATUSES, type AttemptStatus } from "@haccoli/shared";
+import { ATTEMPT_STATUSES, type AttemptStatus } from "@haccoli/shared";
 import type { Command } from "commander";
 import { confirmIfProd } from "./confirm.js";
 import { createContext } from "./context.js";
+import { ADMIN_STATUS_LABELS } from "./labels.js";
 
 type Globals = () => { env: string; yes: boolean };
 
@@ -128,7 +129,7 @@ export function addExamCommands(program: Command, globals: Globals) {
             attemptId: a.attemptId,
             candidate: a.candidateName,
             exam: `${a.examId} v${a.examVersion}`,
-            status: `${status}（${ATTEMPT_STATUS_LABELS[status]}）`,
+            status: `${status}（${ADMIN_STATUS_LABELS[status]}）`,
             deadline: jst(a.deadlineAt),
             submittedAt: jst(a.submittedAt),
           };

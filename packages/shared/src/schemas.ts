@@ -130,3 +130,28 @@ export const saveAnswerRequestSchema = z
   })
   .strict();
 export type SaveAnswerRequest = { content: AnswerContent; version: number };
+
+/** 採点（問題ごとの点数・コメント）。集計ルールは別途検討（§6.1 Grade） */
+export const gradeItemSchema = z
+  .object({
+    score: z.number().finite().nonnegative().optional(),
+    comment: z.string().max(10_000).optional(),
+  })
+  .strict();
+
+/** PUT /api/grader/attempts/{attemptId}/grade */
+export const saveGradeRequestSchema = z
+  .object({
+    items: z.record(z.string(), gradeItemSchema),
+    overallComment: z.string().max(10_000).default(""),
+    /** 読み込んだ時点の版（未保存なら 0）。楽観ロックに使う */
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/** POST /api/grader/attempts/{attemptId}/grade/finalize */
+export const finalizeGradeRequestSchema = z
+  .object({ version: z.number().int().positive() })
+  .strict();
+
+export type GradeItem = z.infer<typeof gradeItemSchema>;
