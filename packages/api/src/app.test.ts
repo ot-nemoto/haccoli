@@ -127,7 +127,7 @@ describe("ロール別ルート", () => {
       Item: { ...candidate, sub: "sub-g", role: "grader" },
     });
     const claims = accessClaims({ sub: "sub-g", "cognito:groups": "[grader]" });
-    expect((await call("/api/grader/assignments", claims)).status).toBe(404);
+    expect((await call("/api/grader/nope", claims)).status).toBe(404);
     expect((await call("/api/candidate/attempts", claims)).status).toBe(403);
   });
 });

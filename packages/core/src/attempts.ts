@@ -9,8 +9,10 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import {
   type AnswerContent,
+  type AssignmentStatus,
   type AttemptStatus,
   type ExamDefinition,
+  type GradeItem,
   isAnswered,
   type Question,
 } from "@haccoli/shared";
@@ -50,9 +52,29 @@ export interface AnswerRecord {
   updatedAt: string;
 }
 
+export interface AssignmentRecord {
+  graderSub: string;
+  graderName: string;
+  assignedAt: string;
+  status: AssignmentStatus;
+  finalizedAt?: string;
+}
+
+export interface GradeRecord {
+  graderSub: string;
+  items: Record<string, GradeItem>;
+  overallComment: string;
+  version: number;
+  updatedAt: string;
+  finalizedAt?: string;
+}
+
+/** 受験 1 件に同一 PK でぶら下がるデータ（§6.1） */
 export interface AttemptBundle {
   attempt: AttemptRecord;
   answers: AnswerRecord[];
+  assignments: AssignmentRecord[];
+  grades: GradeRecord[];
 }
 
 const nowOf = (deps: DataDeps) => deps.now?.() ?? new Date();
@@ -179,9 +201,12 @@ export async function getAttemptBundle(
   } while (startKey);
   const meta = items.find((i) => i.SK === "META");
   if (!meta) return undefined;
+  const withPrefix = (prefix: string) => items.filter((i) => String(i.SK).startsWith(prefix));
   return {
     attempt: toAttempt(meta),
-    answers: items.filter((i) => String(i.SK).startsWith("ANS#")).map(toAnswer),
+    answers: withPrefix("ANS#").map(toAnswer),
+    assignments: withPrefix("ASSIGN#").map(toAssignment),
+    grades: withPrefix("GRADE#").map(toGrade),
   };
 }
 
@@ -482,7 +507,8 @@ async function getAnswerFileKey(
   return typeof content?.fileKey === "string" ? content.fileKey : undefined;
 }
 
-async function getAttemptMeta(
+/** @internal grading.ts からも使う */
+export async function getAttemptMeta(
   deps: DataDeps,
   attemptId: string,
 ): Promise<AttemptRecord | undefined> {
@@ -519,11 +545,13 @@ function explainStateFailure(
   }
 }
 
-function isConditionFailure(e: unknown): boolean {
+/** @internal */
+export function isConditionFailure(e: unknown): boolean {
   return e instanceof Error && e.name === "ConditionalCheckFailedException";
 }
 
-function transactionFailureCodes(e: unknown): (string | undefined)[] | undefined {
+/** @internal */
+export function transactionFailureCodes(e: unknown): (string | undefined)[] | undefined {
   if (!(e instanceof Error) || e.name !== "TransactionCanceledException") return undefined;
   const reasons = (e as { CancellationReasons?: { Code?: string }[] }).CancellationReasons;
   return reasons?.map((r) => r.Code);
@@ -552,6 +580,27 @@ function toAttempt(item: Record<string, unknown>): AttemptRecord {
     deadlineAt: String(item.deadlineAt),
     ...(item.startedAt ? { startedAt: String(item.startedAt) } : {}),
     ...(item.submittedAt ? { submittedAt: String(item.submittedAt) } : {}),
+  };
+}
+
+export function toAssignment(item: Record<string, unknown>): AssignmentRecord {
+  return {
+    graderSub: String(item.graderSub),
+    graderName: String(item.graderName),
+    assignedAt: String(item.assignedAt),
+    status: item.status as AssignmentStatus,
+    ...(item.finalizedAt ? { finalizedAt: String(item.finalizedAt) } : {}),
+  };
+}
+
+export function toGrade(item: Record<string, unknown>): GradeRecord {
+  return {
+    graderSub: String(item.graderSub),
+    items: (item.items as Record<string, GradeItem> | undefined) ?? {},
+    overallComment: String(item.overallComment ?? ""),
+    version: Number(item.version),
+    updatedAt: String(item.updatedAt),
+    ...(item.finalizedAt ? { finalizedAt: String(item.finalizedAt) } : {}),
   };
 }
 

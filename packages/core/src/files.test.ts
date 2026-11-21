@@ -48,6 +48,7 @@ describe("verifyUploadedFile", () => {
       ...inspect,
     }),
     delete: async () => undefined,
+    createDownloadUrl: async () => "",
   });
   const input = {
     attemptId: "at1",
@@ -117,5 +118,15 @@ describe("s3FileStore.inspect", () => {
   it("存在しないキーは NotFound", async () => {
     s3Mock.on(GetObjectCommand).rejects(Object.assign(new Error("x"), { name: "NoSuchKey" }));
     await expect(files.inspect("k", 1024)).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe("attachmentDisposition", () => {
+  it("日本語名は filename* で渡し、filename は ASCII にする（引用符・改行を含めない）", async () => {
+    const { attachmentDisposition } = await import("./files.js");
+    const v = attachmentDisposition('提出"\r\nX: y.zip');
+    expect(v).toMatch(/^attachment; filename="[A-Za-z0-9._-]+"; filename\*=UTF-8''/);
+    expect(v).not.toMatch(/[\r\n]/);
+    expect(v.split('"').length).toBe(3);
   });
 });

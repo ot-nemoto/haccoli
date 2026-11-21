@@ -34,6 +34,7 @@ const files = {
     sha256: "f".repeat(64),
   })),
   delete: vi.fn(async () => undefined),
+  createDownloadUrl: vi.fn(async () => "https://example.com/dl"),
 } satisfies FileStore;
 const deps = { ddb, tableName: "t", now: () => new Date(NOW), files };
 

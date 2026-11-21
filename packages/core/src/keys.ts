@@ -23,6 +23,18 @@ export const keys = {
     GSI2SK: deadlineAt,
   }),
   answer: (attemptId: string, qid: string) => ({ PK: `ATTEMPT#${attemptId}`, SK: `ANS#${qid}` }),
+  assignment: (attemptId: string, graderSub: string) => ({
+    PK: `ATTEMPT#${attemptId}`,
+    SK: `ASSIGN#${graderSub}`,
+  }),
+  assignmentsByGrader: (graderSub: string, assignedAt: string) => ({
+    GSI1PK: `GRADER#${graderSub}`,
+    GSI1SK: `ASSIGN#${assignedAt}`,
+  }),
+  grade: (attemptId: string, graderSub: string) => ({
+    PK: `ATTEMPT#${attemptId}`,
+    SK: `GRADE#${graderSub}`,
+  }),
 } as const;
 
 export const GSI1 = "GSI1";

@@ -5,6 +5,7 @@ import { type AppEnv, authenticate, requireRole } from "./auth.js";
 import { candidateRoutes } from "./candidate.js";
 import type { ApiDeps } from "./deps.js";
 import { ApiError } from "./errors.js";
+import { graderRoutes } from "./grader.js";
 
 /**
  * API アプリケーション（docs/design.md §7）。CloudFront の /api/* から API Gateway 経由で呼ばれる。
@@ -62,6 +63,7 @@ export function createApp(deps: ApiDeps) {
   app.use("/candidate/*", requireRole("candidate"));
   app.use("/grader/*", requireRole("grader"));
   app.route("/candidate", candidateRoutes(deps));
+  app.route("/grader", graderRoutes(deps));
 
   return app;
 }
