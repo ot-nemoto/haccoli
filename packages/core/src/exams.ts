@@ -128,7 +128,8 @@ export async function publishExam(
 
   if (prev > 0) {
     const latest = await getExamVersion(deps, def.examId, prev);
-    if (latest && JSON.stringify(latest) === JSON.stringify(def)) {
+    // DynamoDB の Map は項目順を保持しないため、項目順に依存しない形で比較する
+    if (latest && canonicalJson(latest) === canonicalJson(def)) {
       return { kind: "unchanged", examId: def.examId, version: prev };
     }
   }
@@ -221,6 +222,22 @@ export async function listExams(deps: DataDeps): Promise<ExamSummary[]> {
     startKey = res.LastEvaluatedKey;
   } while (startKey);
   return items.map(toExamSummary).sort((a, b) => a.examId.localeCompare(b.examId));
+}
+
+/** オブジェクトのキーを並べ替えた JSON（配列の順序は保つ） */
+export function canonicalJson(value: unknown): string {
+  const normalize = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(normalize);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(
+        Object.keys(v)
+          .sort()
+          .map((k) => [k, normalize((v as Record<string, unknown>)[k])]),
+      );
+    }
+    return v;
+  };
+  return JSON.stringify(normalize(value));
 }
 
 function toExamSummary(item: Record<string, unknown>): ExamSummary {

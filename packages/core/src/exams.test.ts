@@ -127,12 +127,21 @@ describe("publishExam", () => {
     expect(meta?.Put?.ExpressionAttributeValues).toEqual({ ":prev": 3 });
   });
 
-  it("最新版と同一内容なら投入しない", async () => {
+  it("最新版と同一内容なら投入しない（DynamoDB から読み戻した項目順の違いは無視）", async () => {
+    // DynamoDB の Map は項目順を保持しない。キーの順序を逆にして返す
+    const reversed = (o: object): unknown =>
+      Array.isArray(o)
+        ? o.map((x) => (x && typeof x === "object" ? reversed(x) : x))
+        : Object.fromEntries(
+            Object.entries(o)
+              .reverse()
+              .map(([k, v]) => [k, v && typeof v === "object" ? reversed(v) : v]),
+          );
     ddbMock
       .on(GetCommand, { Key: { PK: "EXAM#e1", SK: "META" } })
       .resolves({ Item: { latestVersion: 5 } })
       .on(GetCommand, { Key: { PK: "EXAM#e1", SK: "V#000005" } })
-      .resolves({ Item: { definition: def } });
+      .resolves({ Item: { definition: reversed(def) } });
     await expect(publishExam({ ...deps }, def)).resolves.toEqual({
       kind: "unchanged",
       examId: "e1",
