@@ -14,11 +14,16 @@ import {
   isAnswered,
   type Question,
 } from "@haccoli/shared";
-import { choiceAnswerSchema, textAnswerSchema } from "@haccoli/shared/schemas";
+import {
+  choiceAnswerSchema,
+  fileAnswerRequestSchema,
+  textAnswerSchema,
+} from "@haccoli/shared/schemas";
 import { validateDeadlineDate } from "./deadline.js";
 import { NotFoundError, StateError, ValidationError, VersionConflictError } from "./errors.js";
 import { type DataDeps, getExamSummary, getExamVersion } from "./exams.js";
-import { GSI1, keys } from "./keys.js";
+import { assertZipFileName, type FileStore, newFileKey, verifyUploadedFile } from "./files.js";
+import { GSI1, GSI2, keys } from "./keys.js";
 import { findUserByEmail } from "./users.js";
 
 /** 受験（docs/design.md §6.1 Attempt） */
@@ -250,13 +255,38 @@ export async function saveAnswer(
     /** 読み込んだ時点の版。未保存なら 0 */
     version: number;
   },
-): Promise<{ version: number; updatedAt: string }> {
+): Promise<{ content: AnswerContent; version: number; updatedAt: string }> {
   const attempt = await getAttemptMeta(deps, input.attemptId);
   if (!attempt || attempt.candidateSub !== input.candidateSub) throw attemptNotFound();
   const exam = await getAttemptExam(deps, attempt);
   const question = exam.questions.find((q) => q.qid === input.qid);
   if (!question) throw new NotFoundError("問題が見つかりません");
-  const content = validateAnswer(question, input.content);
+  // 書き込み時の条件でも確認するが、ファイルの検証（S3 の読み込み）の前に弾いておく
+  if (effectiveStatus(attempt, nowOf(deps)) !== "IN_PROGRESS") {
+    throw explainStateFailure(attempt, input.candidateSub, nowOf(deps));
+  }
+
+  let content: AnswerContent;
+  let previousFileKey: string | undefined;
+  if (question.type === "file") {
+    const files = requireFiles(deps);
+    const req = fileAnswerRequestSchema.safeParse(input.content);
+    if (!req.success) throw new ValidationError("ファイル提出の回答形式が不正です");
+    content = await verifyUploadedFile(
+      files,
+      {
+        attemptId: input.attemptId,
+        qid: question.qid,
+        fileKey: req.data.fileKey,
+        fileName: req.data.fileName,
+        maxBytes: maxBytesOf(question),
+      },
+      nowOf(deps),
+    );
+    previousFileKey = await getAnswerFileKey(deps, input.attemptId, question.qid);
+  } else {
+    content = validateAnswer(question, input.content);
+  }
 
   const now = nowOf(deps).toISOString();
   const version = input.version + 1;
@@ -309,7 +339,40 @@ export async function saveAnswer(
     if (reasons[1] === "ConditionalCheckFailed") throw new VersionConflictError();
     throw e;
   }
-  return { version, updatedAt: now };
+  // 差し替え前のファイルを削除する（バージョニングで一定期間は復元可能。失敗しても保存は成功扱い）
+  if (previousFileKey && "fileKey" in content && previousFileKey !== content.fileKey) {
+    await deps.files?.delete(previousFileKey).catch((e: unknown) => {
+      console.warn(JSON.stringify({ msg: "previous file delete failed", error: String(e) }));
+    });
+  }
+  return { content, version, updatedAt: now };
+}
+
+/**
+ * ファイル提出用の署名付き POST を発行する。回答中・期限前の本人の受験のみ（期限後は発行しない §6.2）。
+ */
+export async function createUploadUrl(
+  deps: DataDeps,
+  input: { attemptId: string; candidateSub: string; qid: string; fileName: string; size: number },
+): Promise<{ url: string; fields: Record<string, string>; fileKey: string; maxBytes: number }> {
+  const files = requireFiles(deps);
+  const attempt = await getAttemptMeta(deps, input.attemptId);
+  if (!attempt || attempt.candidateSub !== input.candidateSub) throw attemptNotFound();
+  if (effectiveStatus(attempt, nowOf(deps)) !== "IN_PROGRESS") {
+    throw explainStateFailure(attempt, input.candidateSub, nowOf(deps));
+  }
+  const exam = await getAttemptExam(deps, attempt);
+  const question = exam.questions.find((q) => q.qid === input.qid);
+  if (!question) throw new NotFoundError("問題が見つかりません");
+  if (question.type !== "file") throw new ValidationError("ファイル提出の問題ではありません");
+  assertZipFileName(input.fileName);
+  const maxBytes = maxBytesOf(question);
+  if (input.size > maxBytes) {
+    throw new ValidationError(`ファイルが大きすぎます（上限 ${question.file.maxSizeMB}MB）`);
+  }
+  const fileKey = newFileKey(input.attemptId, question.qid, input.fileName);
+  const post = await files.createUploadPost(fileKey, maxBytes);
+  return { ...post, fileKey, maxBytes };
 }
 
 /** 提出。以降は回答を変更できない。未回答の問題があっても受け付け、一覧を返す */
@@ -381,7 +444,8 @@ export function validateAnswer(question: Question, content: unknown): AnswerCont
       return { selected: [...selected] };
     }
     case "file":
-      throw new ValidationError("ファイル提出の問題には、まだ対応していません");
+      // ファイルは S3 の実体を検証する必要があるため saveAnswer で扱う
+      throw new ValidationError("ファイル提出の回答は検証済みの内容が必要です");
   }
 }
 
@@ -393,6 +457,30 @@ export function unansweredQuestions(exam: ExamDefinition, answers: AnswerRecord[
 // ---- 内部 ----
 
 const attemptNotFound = () => new NotFoundError("受験が見つかりません");
+
+const maxBytesOf = (q: Extract<Question, { type: "file" }>) =>
+  Math.floor(q.file.maxSizeMB * 1024 * 1024);
+
+function requireFiles(deps: DataDeps): FileStore {
+  if (!deps.files) throw new Error("FileStore が設定されていません");
+  return deps.files;
+}
+
+async function getAnswerFileKey(
+  deps: DataDeps,
+  attemptId: string,
+  qid: string,
+): Promise<string | undefined> {
+  const res = await deps.ddb.send(
+    new GetCommand({
+      TableName: deps.tableName,
+      Key: keys.answer(attemptId, qid),
+      ConsistentRead: true,
+    }),
+  );
+  const content = res.Item?.content as Record<string, unknown> | undefined;
+  return typeof content?.fileKey === "string" ? content.fileKey : undefined;
+}
 
 async function getAttemptMeta(
   deps: DataDeps,
@@ -474,4 +562,107 @@ function toAnswer(item: Record<string, unknown>): AnswerRecord {
     version: Number(item.version),
     updatedAt: String(item.updatedAt),
   };
+}
+
+// ---- 期限処理・期限延長 ----
+
+/**
+ * 期限到来済みの未着手・回答中の受験を EXPIRED にする（docs/design.md §6.4。1 時間毎のバッチ）。
+ * 期限の厳密な判定は書き込み時の条件式で担保済みのため、これは状態の後片付け。
+ * 並行して提出・延長された受験は条件式で除外される。
+ */
+export async function expireAttempts(deps: DataDeps): Promise<{ expired: string[] }> {
+  const now = nowOf(deps).toISOString();
+  const expired: string[] = [];
+  for (const status of ["NOT_STARTED", "IN_PROGRESS"] as const) {
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const res = await deps.ddb.send(
+        new QueryCommand({
+          TableName: deps.tableName,
+          IndexName: GSI2,
+          KeyConditionExpression: "GSI2PK = :pk AND GSI2SK <= :now",
+          ExpressionAttributeValues: {
+            ":pk": keys.attemptsByStatus(status, "").GSI2PK,
+            ":now": now,
+          },
+          ExclusiveStartKey: startKey,
+        }),
+      );
+      for (const item of res.Items ?? []) {
+        const attemptId = String(item.attemptId);
+        try {
+          await deps.ddb.send(
+            new UpdateCommand({
+              TableName: deps.tableName,
+              Key: keys.attemptMeta(attemptId),
+              UpdateExpression: "SET #s = :next, expiredAt = :now, GSI2PK = :gsi2pk",
+              ConditionExpression: "#s = :cur AND deadlineAt <= :now",
+              ExpressionAttributeNames: { "#s": "status" },
+              ExpressionAttributeValues: {
+                ":next": "EXPIRED",
+                ":cur": status,
+                ":now": now,
+                ":gsi2pk": keys.attemptsByStatus("EXPIRED", "").GSI2PK,
+              },
+            }),
+          );
+          expired.push(attemptId);
+        } catch (e) {
+          if (!isConditionFailure(e)) throw e;
+        }
+      }
+      startKey = res.LastEvaluatedKey;
+    } while (startKey);
+  }
+  return { expired };
+}
+
+/**
+ * 期限を変更する（docs/design.md §8 attempt:extend）。EXPIRED からも戻せる。
+ * 開始済みなら IN_PROGRESS、未着手なら NOT_STARTED に戻す。提出済み・取消は変更不可。
+ */
+export async function extendAttempt(
+  deps: DataDeps,
+  input: { attemptId: string; deadline: string; force?: boolean },
+): Promise<{ before: AttemptRecord; after: AttemptRecord }> {
+  const now = nowOf(deps);
+  const deadlineAt = validateDeadlineDate(input.deadline, now, input.force);
+  const before = await getAttemptMeta(deps, input.attemptId);
+  if (!before) throw attemptNotFound();
+  if (!["NOT_STARTED", "IN_PROGRESS", "EXPIRED"].includes(before.status)) {
+    throw new StateError("INVALID", `この受験は期限を変更できません（${before.status}）`);
+  }
+  const next: AttemptStatus =
+    before.status === "EXPIRED"
+      ? before.startedAt
+        ? "IN_PROGRESS"
+        : "NOT_STARTED"
+      : before.status;
+  try {
+    const res = await deps.ddb.send(
+      new UpdateCommand({
+        TableName: deps.tableName,
+        Key: keys.attemptMeta(input.attemptId),
+        UpdateExpression:
+          "SET #s = :next, deadlineAt = :deadline, GSI2PK = :gsi2pk, GSI2SK = :deadline REMOVE expiredAt",
+        // 読み取り後に提出・期限処理された場合は失敗させる
+        ConditionExpression: "#s = :cur",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":next": next,
+          ":cur": before.status,
+          ":deadline": deadlineAt,
+          ":gsi2pk": keys.attemptsByStatus(next, "").GSI2PK,
+        },
+        ReturnValues: "ALL_NEW",
+      }),
+    );
+    return { before, after: toAttempt(res.Attributes ?? {}) };
+  } catch (e) {
+    if (isConditionFailure(e)) {
+      throw new StateError("INVALID", "受験の状態が変わりました。もう一度実行してください");
+    }
+    throw e;
+  }
 }

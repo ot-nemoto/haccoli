@@ -3,7 +3,9 @@ import {
   type CandidateAttemptDetail,
   type CandidateAttemptSummary,
   isAnswered,
+  type SaveAnswerResponse,
   type SubmitResponse,
+  type UploadUrlResponse,
 } from "@haccoli/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
@@ -13,6 +15,7 @@ import { Deadline, StatusBadge } from "../components/AttemptStatus.js";
 import { Markdown } from "../components/Markdown.js";
 import { emptyContent, type FieldState, QuestionField } from "../components/QuestionField.js";
 import { clearDraft, loadDraft, saveDraft } from "../lib/drafts.js";
+import { UploadError, uploadToS3 } from "../lib/upload.js";
 import { Layout } from "./Layout.js";
 
 /** 入力が止まってから自動保存するまでの時間 */
@@ -166,10 +169,10 @@ function AnswerForm(props: {
       const sent = f.content;
       patch(qid, { saving: true, error: undefined });
       try {
-        const res = await api<{ version: number; updatedAt: string }>(
-          `${path}/answers/${encodeURIComponent(qid)}`,
-          { method: "PUT", body: JSON.stringify({ content: sent, version: f.version }) },
-        );
+        const res = await api<SaveAnswerResponse>(`${path}/answers/${encodeURIComponent(qid)}`, {
+          method: "PUT",
+          body: JSON.stringify({ content: sent, version: f.version }),
+        });
         setFields((prev) => {
           const cur = prev[qid];
           if (!cur) return prev;
@@ -211,6 +214,58 @@ function AnswerForm(props: {
     [api, path, attemptId, onStateChanged, patch],
   );
 
+  /** ファイル提出: 署名付き POST を受け取り S3 へ直接送ってから、回答として登録する */
+  const uploadFile = async (qid: string, file: File) => {
+    const q = detail.questions.find((x) => x.qid === qid);
+    const cur = fieldsRef.current[qid];
+    if (q?.type !== "file" || !cur || readOnly) return;
+    if (!/\.zip$/i.test(file.name)) {
+      patch(qid, { error: "zip ファイル（.zip）を選択してください" });
+      return;
+    }
+    if (file.size === 0) {
+      patch(qid, { error: "空のファイルは提出できません" });
+      return;
+    }
+    if (file.size > q.file.maxSizeMB * 1024 * 1024) {
+      patch(qid, { error: `ファイルが大きすぎます（上限 ${q.file.maxSizeMB}MB）` });
+      return;
+    }
+    patch(qid, { uploading: 0, error: undefined });
+    const base = `${path}/answers/${encodeURIComponent(qid)}`;
+    try {
+      const target = await api<UploadUrlResponse>(`${base}/upload-url`, {
+        method: "POST",
+        body: JSON.stringify({ fileName: file.name, size: file.size }),
+      });
+      await uploadToS3(target, file, (percent) => patch(qid, { uploading: percent }));
+      patch(qid, { uploading: undefined, saving: true });
+      const res = await api<SaveAnswerResponse>(base, {
+        method: "PUT",
+        body: JSON.stringify({
+          content: { fileKey: target.fileKey, fileName: file.name },
+          version: fieldsRef.current[qid]?.version ?? cur.version,
+        }),
+      });
+      const next = { content: res.content, version: res.version, savedAt: res.updatedAt };
+      fieldsRef.current = {
+        ...fieldsRef.current,
+        [qid]: { ...(fieldsRef.current[qid] as FieldState), ...next },
+      };
+      patch(qid, { ...next, saving: false, dirty: false });
+    } catch (e) {
+      const update = { uploading: undefined, saving: false };
+      if (e instanceof ApiError && e.code === "VERSION_CONFLICT") {
+        patch(qid, { ...update, conflict: true, error: e.message });
+      } else if (e instanceof ApiError && e.code === "INVALID_STATE") {
+        patch(qid, update);
+        await onStateChanged(e.message);
+      } else {
+        patch(qid, { ...update, error: e instanceof UploadError ? e.message : messageOf(e) });
+      }
+    }
+  };
+
   const onChange = (qid: string, content: AnswerContent) => {
     const cur = fieldsRef.current[qid];
     if (!cur || readOnly) return;
@@ -245,7 +300,9 @@ function AnswerForm(props: {
   }, [readOnly, saveAll]);
 
   // 未保存の変更があるままページを離れようとしたら警告する
-  const hasUnsaved = Object.values(fields).some((f) => f.dirty || f.saving);
+  const hasUnsaved = Object.values(fields).some(
+    (f) => f.dirty || f.saving || f.uploading !== undefined,
+  );
   useEffect(() => {
     if (!hasUnsaved) return;
     const handler = (e: BeforeUnloadEvent) => e.preventDefault();
@@ -278,7 +335,7 @@ function AnswerForm(props: {
     try {
       await saveAll();
       const blocked = Object.values(fieldsRef.current).some(
-        (f) => f.dirty || f.error || f.conflict,
+        (f) => f.dirty || f.error || f.conflict || f.uploading !== undefined,
       );
       if (blocked) {
         setSubmitError("保存できていない回答があります。表示されているエラーを確認してください。");
@@ -312,6 +369,7 @@ function AnswerForm(props: {
             field={field}
             readOnly={readOnly}
             onChange={(content) => onChange(q.qid, content)}
+            onUpload={(file) => void uploadFile(q.qid, file)}
             onReload={() => void props.onReload()}
           />
         );

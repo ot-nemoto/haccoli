@@ -4,6 +4,7 @@ import { Api } from "./api.js";
 import { Auth } from "./auth.js";
 import type { EnvConfig } from "./config.js";
 import { Data } from "./data.js";
+import { Storage, submissionsBucketName } from "./storage.js";
 import { Web } from "./web.js";
 
 export interface HaccoliStackProps extends StackProps {
@@ -26,10 +27,15 @@ export class HaccoliStack extends Stack {
       userPool: auth.userPool,
       webClient: auth.webClient,
       table: data.table,
+      submissionsBucketName: submissionsBucketName(this, props.config.envName),
     });
     const web = new Web(this, "Web", {
       distDir: props.webDistDir,
-      connectSources: [`https://cognito-idp.${this.region}.amazonaws.com`],
+      connectSources: [
+        `https://cognito-idp.${this.region}.amazonaws.com`,
+        // 提出ファイルはブラウザから S3 へ直接アップロードする
+        Storage.endpoint(this, props.config.envName),
+      ],
       apiOriginDomain: api.originDomain,
       runtimeConfig: {
         region: this.region,
@@ -38,10 +44,20 @@ export class HaccoliStack extends Stack {
       },
     });
 
+    const webOrigin = `https://${web.distribution.distributionDomainName}`;
+    const storage = new Storage(this, "Storage", {
+      config: props.config,
+      // dev はローカル開発（vite）からのアップロードも許可する
+      allowedOrigins:
+        props.config.envName === "dev" ? [webOrigin, "http://localhost:5173"] : [webOrigin],
+    });
+
     new CfnOutput(this, "UserPoolId", { value: auth.userPool.userPoolId });
     new CfnOutput(this, "UserPoolClientId", { value: auth.webClient.userPoolClientId });
     new CfnOutput(this, "TableName", { value: data.table.tableName });
     new CfnOutput(this, "ApiFunctionName", { value: api.handler.functionName });
-    new CfnOutput(this, "WebUrl", { value: `https://${web.distribution.distributionDomainName}` });
+    new CfnOutput(this, "ExpireFunctionName", { value: api.expireFunction.functionName });
+    new CfnOutput(this, "SubmissionsBucket", { value: storage.submissions.bucketName });
+    new CfnOutput(this, "WebUrl", { value: webOrigin });
   }
 }

@@ -14,7 +14,15 @@ import { createApp } from "./app.js";
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "ap-northeast-1" }));
 const ddbMock = mockClient(ddb);
 const NOW = "2026-11-20T03:00:00.000Z";
-const app = createApp({ ddb, tableName: "t", now: () => new Date(NOW) });
+const files = {
+  createUploadPost: vi.fn(async (key: string) => ({
+    url: "https://bucket.s3.ap-northeast-1.amazonaws.com/",
+    fields: { key, Policy: "p", "X-Amz-Signature": "s" },
+  })),
+  inspect: vi.fn(),
+  delete: vi.fn(),
+};
+const app = createApp({ ddb, tableName: "t", now: () => new Date(NOW), files });
 
 const user = { sub: "me", name: "山田", role: "candidate", disabled: false };
 const exam = {
@@ -34,6 +42,7 @@ const exam = {
       ],
       rubric: { correct: ["a"], points: 5 },
     },
+    { qid: "q3", type: "file", body: "問3", file: { maxSizeMB: 20, extensions: [".zip"] } },
   ],
 };
 const attempt = {
@@ -115,7 +124,7 @@ describe("GET /attempts/:id", () => {
       status: "IN_PROGRESS",
       answers: { q1: { content: { text: "回答" }, version: 2 } },
     });
-    expect(body.questions).toHaveLength(2);
+    expect(body.questions).toHaveLength(3);
     const text = JSON.stringify(body);
     expect(text).not.toContain("rubric");
     expect(text).not.toContain("秘密の基準");
@@ -140,7 +149,7 @@ describe("PUT /attempts/:id/answers/:qid", () => {
     ddbMock.on(TransactWriteCommand).resolves({});
     const res = await put("/attempts/at1/answers/q2", { content: { selected: ["b"] }, version: 0 });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ version: 1, updatedAt: NOW });
+    expect(await res.json()).toEqual({ content: { selected: ["b"] }, version: 1, updatedAt: NOW });
   });
 
   it.each([
@@ -209,6 +218,39 @@ describe("POST /attempts/:id/start, submit", () => {
       .resolves({ Attributes: { ...attempt, status: "SUBMITTED", submittedAt: NOW } });
     const res = await call("/attempts/at1/submit", { method: "POST" });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ submittedAt: NOW, unanswered: ["q2"] });
+    expect(await res.json()).toEqual({ submittedAt: NOW, unanswered: ["q2", "q3"] });
+  });
+});
+
+describe("POST /attempts/:id/answers/:qid/upload-url", () => {
+  const post = (qid: string, body: unknown) =>
+    call(`/attempts/at1/answers/${qid}/upload-url`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+
+  it("署名付き POST とキーを返す", async () => {
+    setup();
+    const res = await post("q3", { fileName: "src.zip", size: 1000 });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { fileKey: string; url: string; maxBytes: number };
+    expect(body.fileKey).toMatch(/^attempts\/at1\/q3\//);
+    expect(body.maxBytes).toBe(20 * 1024 * 1024);
+    expect(body.url).toContain("s3");
+  });
+
+  it.each([
+    ["サイズなし", "q3", { fileName: "src.zip" }],
+    ["ファイル提出でない問題", "q1", { fileName: "src.zip", size: 1 }],
+    ["zip 以外", "q3", { fileName: "src.exe", size: 1 }],
+  ])("%s は 400", async (_, qid, body) => {
+    setup();
+    expect((await post(qid, body)).status).toBe(400);
+  });
+
+  it("提出後は 409", async () => {
+    setup({ status: "SUBMITTED" });
+    expect((await post("q3", { fileName: "src.zip", size: 1 })).status).toBe(409);
   });
 });

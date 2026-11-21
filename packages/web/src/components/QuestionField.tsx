@@ -1,6 +1,7 @@
-import type { AnswerContent, CandidateQuestion } from "@haccoli/shared";
+import type { AnswerContent, CandidateQuestion, FileAnswer } from "@haccoli/shared";
 import { useState } from "react";
-import { formatJstTime } from "../lib/format.js";
+import { formatJst, formatJstTime } from "../lib/format.js";
+import { formatBytes } from "../lib/upload.js";
 import { Markdown } from "./Markdown.js";
 
 export interface FieldState {
@@ -13,10 +14,19 @@ export interface FieldState {
   error?: string;
   /** 別の画面で更新された。再読み込みするまで保存しない */
   conflict?: boolean;
+  /** ファイルのアップロード進捗（0〜100）。アップロード中のみ */
+  uploading?: number;
 }
 
 export function emptyContent(q: CandidateQuestion): AnswerContent {
-  return q.type === "choice" ? { selected: [] } : { text: "" };
+  switch (q.type) {
+    case "choice":
+      return { selected: [] };
+    case "file":
+      return { fileKey: "", fileName: "", size: 0, sha256: "", uploadedAt: "" };
+    default:
+      return { text: "" };
+  }
 }
 
 /** 問題 1 問分（問題文・回答欄・保存状態） */
@@ -26,6 +36,7 @@ export function QuestionField(props: {
   field: FieldState;
   readOnly: boolean;
   onChange: (content: AnswerContent) => void;
+  onUpload: (file: File) => void;
   onReload: () => void;
 }) {
   const { question: q, field } = props;
@@ -71,7 +82,15 @@ export function QuestionField(props: {
           })}
         </fieldset>
       )}
-      {q.type === "file" && <p className="muted">ファイル提出の問題は準備中です。</p>}
+      {q.type === "file" && "fileKey" in field.content && (
+        <FileAnswerField
+          value={field.content}
+          maxSizeMB={q.file.maxSizeMB}
+          readOnly={props.readOnly}
+          uploading={field.uploading}
+          onSelect={props.onUpload}
+        />
+      )}
       {!props.readOnly && <SaveStatus field={field} onReload={props.onReload} />}
     </section>
   );
@@ -149,9 +168,65 @@ function SaveStatus(props: { field: FieldState; onReload: () => void }) {
     );
   }
   let text = "未保存";
-  if (f.saving) text = "保存中…";
+  if (f.uploading !== undefined) text = `アップロード中…（${f.uploading}%）`;
+  else if (f.saving) text = "保存中…";
   else if (f.dirty) text = "未保存の変更があります";
   else if (f.savedAt) text = `保存済み（${formatJstTime(f.savedAt)}）`;
   else if (f.version === 0) text = "未回答";
   return <p className="save-status">{text}</p>;
+}
+
+function FileAnswerField(props: {
+  value: FileAnswer;
+  maxSizeMB: number;
+  readOnly: boolean;
+  uploading?: number;
+  onSelect: (file: File) => void;
+}) {
+  const v = props.value;
+  const busy = props.uploading !== undefined;
+  return (
+    <div className="file-answer">
+      {v.fileKey ? (
+        <dl className="file-info">
+          <dt>ファイル</dt>
+          <dd>{v.fileName}</dd>
+          <dt>サイズ</dt>
+          <dd>{formatBytes(v.size)}</dd>
+          <dt>SHA-256</dt>
+          <dd className="hash">{v.sha256}</dd>
+          <dt>アップロード</dt>
+          <dd>{formatJst(v.uploadedAt)}</dd>
+        </dl>
+      ) : (
+        <p className="muted">まだファイルを提出していません。</p>
+      )}
+      {!props.readOnly && (
+        <>
+          <label className="file-select">
+            {v.fileKey ? "別のファイルに差し替える" : "zip ファイルを選択"}（{props.maxSizeMB}MB
+            まで）
+            <input
+              type="file"
+              accept=".zip,application/zip"
+              disabled={busy}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) props.onSelect(file);
+              }}
+            />
+          </label>
+          {busy && (
+            <progress max={100} value={props.uploading}>
+              {props.uploading}%
+            </progress>
+          )}
+          <p className="muted">
+            node_modules・ビルド成果物・パスワードなどの秘密情報は含めないでください。
+          </p>
+        </>
+      )}
+    </div>
+  );
 }

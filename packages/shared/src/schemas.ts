@@ -95,12 +95,31 @@ export type FileQuestion = z.infer<typeof fileQuestionSchema>;
 export type Question = z.infer<typeof questionSchema>;
 export type ExamDefinition = z.infer<typeof examDefinitionSchema>;
 
-/** 回答内容（§5.1）。file は Step 4 で対応 */
+/** 回答内容（§5.1） */
 export const textAnswerSchema = z.object({ text: z.string() }).strict();
 export const choiceAnswerSchema = z.object({ selected: z.array(z.string()) }).strict();
+/** ファイル提出の保存リクエスト。サイズ・ハッシュはサーバーが S3 の実体から求める */
+export const fileAnswerRequestSchema = z
+  .object({ fileKey: z.string().min(1).max(1024), fileName: z.string().min(1).max(255) })
+  .strict();
 export type TextAnswer = z.infer<typeof textAnswerSchema>;
 export type ChoiceAnswer = z.infer<typeof choiceAnswerSchema>;
-export type AnswerContent = TextAnswer | ChoiceAnswer;
+/** 保存されたファイル提出（§5.1） */
+export interface FileAnswer {
+  fileKey: string;
+  /** 表示用の元のファイル名 */
+  fileName: string;
+  size: number;
+  /** 提出物の同一性確認用（16 進） */
+  sha256: string;
+  uploadedAt: string;
+}
+export type AnswerContent = TextAnswer | ChoiceAnswer | FileAnswer;
+
+/** POST /api/candidate/attempts/{attemptId}/answers/{qid}/upload-url */
+export const uploadUrlRequestSchema = z
+  .object({ fileName: z.string().min(1).max(255), size: z.number().int().positive() })
+  .strict();
 
 /** PUT /api/candidate/attempts/{attemptId}/answers/{qid} */
 export const saveAnswerRequestSchema = z
