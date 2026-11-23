@@ -15,7 +15,7 @@ import { finalizeGradeRequestSchema, saveGradeRequestSchema } from "@haccoli/sha
 import { Hono } from "hono";
 import type { AppEnv } from "./auth.js";
 import type { ApiDeps } from "./deps.js";
-import { ApiError } from "./errors.js";
+import { invalidRequest } from "./errors.js";
 
 /**
  * 採点者 API（docs/design.md §7.3）。/api/grader/* に requireRole("grader") 済みでマウントする。
@@ -24,8 +24,6 @@ import { ApiError } from "./errors.js";
  */
 export function graderRoutes(deps: ApiDeps) {
   const app = new Hono<AppEnv>();
-  const invalid = () => new ApiError(400, "VALIDATION", "リクエストの形式が不正です");
-
   app.get("/assignments", async (c) => {
     return c.json<GraderAssignmentSummary[]>(
       await listAssignmentsForGrader(deps, c.get("user").sub),
@@ -66,7 +64,7 @@ export function graderRoutes(deps: ApiDeps) {
 
   app.put("/attempts/:attemptId/grade", async (c) => {
     const body = saveGradeRequestSchema.safeParse(await c.req.json().catch(() => undefined));
-    if (!body.success) throw invalid();
+    if (!body.success) throw invalidRequest(body.error);
     const saved = await saveGrade(deps, {
       attemptId: c.req.param("attemptId"),
       graderSub: c.get("user").sub,
@@ -79,7 +77,7 @@ export function graderRoutes(deps: ApiDeps) {
 
   app.post("/attempts/:attemptId/grade/finalize", async (c) => {
     const body = finalizeGradeRequestSchema.safeParse(await c.req.json().catch(() => undefined));
-    if (!body.success) throw invalid();
+    if (!body.success) throw invalidRequest(body.error);
     const res = await finalizeGrade(deps, {
       attemptId: c.req.param("attemptId"),
       graderSub: c.get("user").sub,

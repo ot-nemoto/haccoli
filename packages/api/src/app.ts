@@ -36,6 +36,16 @@ export function createApp(deps: ApiDeps) {
   app.onError((err, c) => {
     const known = toApiError(err);
     if (known) {
+      // 4xx の原因を追えるよう、コードと補足をログに出す（メッセージ・本文は出さない）
+      console.log(
+        JSON.stringify({
+          msg: "client_error",
+          status: known.status,
+          code: known.code,
+          ...(known.detail ? { detail: known.detail } : {}),
+          route: c.req.routePath,
+        }),
+      );
       return c.json<ApiErrorBody>(
         { error: { code: known.code, message: known.message } },
         known.status,

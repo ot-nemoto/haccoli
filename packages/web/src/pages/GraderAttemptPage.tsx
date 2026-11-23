@@ -6,12 +6,13 @@ import {
   type SaveGradeResponse,
 } from "@haccoli/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { ApiError, messageOf } from "../api.js";
 import { useApi } from "../auth/useApi.js";
 import { AnswerView } from "../components/AnswerView.js";
 import { Markdown } from "../components/Markdown.js";
 import { formatJst, formatJstTime } from "../lib/format.js";
+import { scoreError } from "../lib/grading.js";
 import { Layout } from "./Layout.js";
 
 const AUTOSAVE_DELAY_MS = 3000;
@@ -83,11 +84,26 @@ function GradingForm(props: {
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const inflight = useRef<Promise<boolean> | undefined>(undefined);
 
+  /** 点数が不正な問題の表示名（「問 2」など） */
+  const invalidLabels = useCallback(
+    (d: Draft) =>
+      detail.questions
+        .map((q, i) => ({ q, label: `問 ${i + 1}` }))
+        .filter(({ q }) => scoreError(d.items[q.qid]?.score, q.rubric?.points))
+        .map(({ label }) => label),
+    [detail.questions],
+  );
+
   /** 保存する。成功（または保存不要）なら true */
   const save = useCallback(async (): Promise<boolean> => {
     if (inflight.current) await inflight.current;
     if (!latest.current.dirty) return true;
     const sent = latest.current.draft;
+    const invalid = invalidLabels(sent);
+    if (invalid.length > 0) {
+      setError(`点数の入力に誤りがあります（${invalid.join("、")}）。修正すると保存されます。`);
+      return false;
+    }
     const run = (async () => {
       setSaving(true);
       setError(undefined);
@@ -118,7 +134,7 @@ function GradingForm(props: {
     } finally {
       inflight.current = undefined;
     }
-  }, [api, path]);
+  }, [api, path, invalidLabels]);
 
   const update = (next: Draft) => {
     if (readOnly || conflict) return;
@@ -126,6 +142,8 @@ function GradingForm(props: {
     setDraft(next);
     setDirty(true);
     if (timer.current) clearTimeout(timer.current);
+    if (invalidLabels(next).length > 0) return; // 不正な入力は保存しない（欄の下に表示する）
+    setError(undefined);
     timer.current = setTimeout(() => void save(), AUTOSAVE_DELAY_MS);
   };
 
@@ -151,6 +169,7 @@ function GradingForm(props: {
   const unscored = detail.questions
     .map((q, i) => ({ qid: q.qid, label: `問 ${i + 1}` }))
     .filter((q) => draft.items[q.qid]?.score === undefined);
+  const invalidNow = invalidLabels(draft);
   const total = detail.questions.reduce((sum, q) => sum + (draft.items[q.qid]?.score ?? 0), 0);
   const maxTotal = detail.questions.reduce((sum, q) => sum + (q.rubric?.points ?? 0), 0);
 
@@ -161,20 +180,32 @@ function GradingForm(props: {
       clearTimeout(timer.current);
       // 一度も保存していない場合も確定できるよう、先に保存する
       if (latest.current.version === 0) latest.current.dirty = true;
+      // 失敗時は確認欄を開いたままにし、その中にエラーを表示する
       if (!(await save())) return;
       const res = await api<{ finalizedAt: string }>(`${path}/grade/finalize`, {
         method: "POST",
         body: JSON.stringify({ version: latest.current.version }),
       });
       setFinalizedAt(res.finalizedAt);
+      setConfirming(false);
     } catch (e) {
       if (e instanceof ApiError && e.code === "VERSION_CONFLICT") setConflict(true);
       setError(messageOf(e));
     } finally {
       setFinalizing(false);
-      setConfirming(false);
     }
   };
+
+  const errorView = error && (
+    <p role="alert" className="error">
+      {error}{" "}
+      {conflict && (
+        <button type="button" className="link" onClick={() => void props.onReload()}>
+          再読み込み
+        </button>
+      )}
+    </p>
+  );
 
   const status = finalizedAt ? "DONE" : detail.assignmentStatus;
   return (
@@ -199,23 +230,22 @@ function GradingForm(props: {
               ? `確定済み（${formatJst(finalizedAt)}）`
               : saving
                 ? "保存中…"
-                : dirty
-                  ? "未保存の変更があります"
-                  : savedAt
-                    ? `下書き保存済み（${formatJstTime(savedAt)}）`
-                    : "未保存"}
+                : invalidNow.length > 0
+                  ? "入力に誤りがあります（未保存）"
+                  : dirty
+                    ? "未保存の変更があります"
+                    : savedAt
+                      ? `下書き保存済み（${formatJstTime(savedAt)}）`
+                      : "未保存"}
           </span>
         </div>
+        {/* 見出しは画面上部に固定されるため、どこまでスクロールしていてもエラーが見える */}
+        {!confirming && errorView}
       </div>
 
-      {error && (
-        <p role="alert" className="error">
-          {error}{" "}
-          {conflict && (
-            <button type="button" className="link" onClick={() => void props.onReload()}>
-              再読み込み
-            </button>
-          )}
+      {finalizedAt && (
+        <p className="notice">
+          採点を確定しました。<Link to="/grader">担当一覧へ戻る</Link>
         </p>
       )}
 
@@ -226,6 +256,7 @@ function GradingForm(props: {
 
       {detail.questions.map((q, i) => {
         const item = draft.items[q.qid] ?? {};
+        const itemError = scoreError(item.score, q.rubric?.points);
         return (
           <section key={q.qid} className="grade-row">
             <div className="grade-answer">
@@ -261,12 +292,14 @@ function GradingForm(props: {
                   inputMode="decimal"
                   value={item.score ?? ""}
                   readOnly={readOnly}
+                  aria-invalid={itemError ? true : undefined}
                   onChange={(e) => {
                     const v = e.target.value;
                     setItem(q.qid, { score: v === "" ? undefined : Number(v) });
                   }}
                 />
               </label>
+              {itemError && <p className="error">{itemError}</p>}
               <label>
                 コメント
                 <textarea
@@ -309,7 +342,10 @@ function GradingForm(props: {
           {!confirming ? (
             <button
               type="button"
-              onClick={() => setConfirming(true)}
+              onClick={() => {
+                setError(undefined);
+                setConfirming(true);
+              }}
               disabled={finalizing || conflict}
             >
               採点を確定する
@@ -319,12 +355,20 @@ function GradingForm(props: {
               <p>
                 <strong>確定すると採点を変更できなくなります。</strong>
               </p>
+              {invalidNow.length > 0 && (
+                <p className="error">点数の入力に誤りがあります: {invalidNow.join("、")}</p>
+              )}
               {unscored.length > 0 && (
                 <p className="error">
                   点数が未入力の問題があります: {unscored.map((u) => u.label).join("、")}
                 </p>
               )}
-              <button type="button" onClick={() => void finalize()} disabled={finalizing}>
+              {errorView}
+              <button
+                type="button"
+                onClick={() => void finalize()}
+                disabled={finalizing || invalidNow.length > 0}
+              >
                 {finalizing ? "確定しています…" : "確定する"}
               </button>{" "}
               <button

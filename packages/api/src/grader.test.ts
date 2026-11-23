@@ -133,6 +133,27 @@ describe("PUT /attempts/:id/grade", () => {
     expect(ddbMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
   });
 
+  it("形式エラーは不正な項目のパスをログに出す（値は出さない）", async () => {
+    setup([assigned]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const res = await send("PUT", "/attempts/at1/grade", {
+        items: { q1: { score: -12345 } },
+        version: 0,
+      });
+      expect(res.status).toBe(400);
+      const lines = log.mock.calls.map((c) => String(c[0]));
+      const line = lines.find((l) => l.includes("client_error"));
+      expect(JSON.parse(line ?? "{}")).toMatchObject({
+        code: "VALIDATION",
+        detail: "items.q1.score",
+      });
+      expect(lines.join("\n")).not.toContain("-12345");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("確定済みは 409 INVALID_STATE", async () => {
     setup([{ ...assigned, status: "DONE" }]);
     const res = await send("PUT", "/attempts/at1/grade", { items: {}, version: 1 });
