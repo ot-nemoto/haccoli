@@ -76,7 +76,10 @@ function GradingForm(props: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [conflict, setConflict] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
   const readOnly = Boolean(finalizedAt) || detail.assignmentStatus === "DONE";
+  // 確定の処理中も編集させない（確定後に自動保存が走り、409 になるのを防ぐ）
+  const locked = readOnly || finalizing;
 
   // 非同期処理から最新の値を読むための参照
   const latest = useRef({ draft, version, dirty });
@@ -137,7 +140,7 @@ function GradingForm(props: {
   }, [api, path, invalidLabels]);
 
   const update = (next: Draft) => {
-    if (readOnly || conflict) return;
+    if (locked || conflict) return;
     latest.current = { ...latest.current, draft: next, dirty: true };
     setDraft(next);
     setDirty(true);
@@ -165,7 +168,6 @@ function GradingForm(props: {
 
   // ---- 確定 ----
   const [confirming, setConfirming] = useState(false);
-  const [finalizing, setFinalizing] = useState(false);
   const unscored = detail.questions
     .map((q, i) => ({ qid: q.qid, label: `問 ${i + 1}` }))
     .filter((q) => draft.items[q.qid]?.score === undefined);
@@ -186,6 +188,7 @@ function GradingForm(props: {
         method: "POST",
         body: JSON.stringify({ version: latest.current.version }),
       });
+      clearTimeout(timer.current);
       setFinalizedAt(res.finalizedAt);
       setConfirming(false);
     } catch (e) {
@@ -291,7 +294,7 @@ function GradingForm(props: {
                   step="any"
                   inputMode="decimal"
                   value={item.score ?? ""}
-                  readOnly={readOnly}
+                  readOnly={locked}
                   aria-invalid={itemError ? true : undefined}
                   onChange={(e) => {
                     const v = e.target.value;
@@ -305,7 +308,7 @@ function GradingForm(props: {
                 <textarea
                   rows={4}
                   value={item.comment ?? ""}
-                  readOnly={readOnly}
+                  readOnly={locked}
                   onChange={(e) => setItem(q.qid, { comment: e.target.value })}
                 />
               </label>
@@ -320,7 +323,7 @@ function GradingForm(props: {
           <textarea
             rows={5}
             value={draft.overallComment}
-            readOnly={readOnly}
+            readOnly={locked}
             onChange={(e) => update({ ...draft, overallComment: e.target.value })}
           />
         </label>
