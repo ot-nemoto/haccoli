@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, openSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { assignGraders, collectResults } from "@haccoli/core";
 import { ASSIGNMENT_STATUS_LABELS } from "@haccoli/shared";
@@ -87,9 +87,22 @@ export function addGradingCommands(program: Command, globals: Globals) {
         ];
       });
       const out = fromInvocationDir(opts.out);
-      // 個人情報を含むため所有者のみ読み書き可能にする
-      writeFileSync(out, toCsv([header, ...body]), { mode: 0o600 });
+      writePrivateFile(out, toCsv([header, ...body]));
       console.log(`出力しました: ${out}（${rows.length} 行）`);
       console.log("候補者の個人情報を含みます。取り扱いに注意し、不要になったら削除してください。");
     });
+}
+
+/**
+ * 個人情報を含むため所有者のみ読み書き可能にする。mode は新規作成時にしか効かないので、
+ * 既存ファイルを上書きするときも、書き込む前に権限を 0600 に変える。
+ */
+function writePrivateFile(path: string, content: string): void {
+  const fd = openSync(path, "w", 0o600);
+  try {
+    fchmodSync(fd, 0o600);
+    writeSync(fd, content);
+  } finally {
+    closeSync(fd);
+  }
 }
