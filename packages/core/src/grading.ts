@@ -52,11 +52,14 @@ export async function assignGraders(
   const bundle = await getAttemptBundle(deps, input.attemptId);
   if (!bundle) throw notFound();
   const now = nowOf(deps);
-  let status = effectiveStatus(bundle.attempt, now);
+  const status = effectiveStatus(bundle.attempt, now);
   if (status === "EXPIRED" || status === "CANCELED") {
     throw new StateError("INVALID", `${status} の受験には採点者を割り当てられません`);
   }
 
+  // 書き込みの条件に使う、保存されている状態と割り当て数（同時実行の検出用）
+  let storedStatus = bundle.attempt.status;
+  let assignmentCount = bundle.assignments.length;
   const assigned: UserProfile[] = [];
   const skipped: UserProfile[] = [];
   for (const grader of graders) {
@@ -65,32 +68,32 @@ export async function assignGraders(
       continue;
     }
     const assignedAt = now.toISOString();
-    const metaKey = keys.attemptMeta(input.attemptId);
-    const attemptCondition =
-      status === "GRADED"
-        ? {
-            Update: {
-              TableName: deps.tableName,
-              Key: metaKey,
-              UpdateExpression: "SET #s = :next, GSI2PK = :gsi2pk",
-              ConditionExpression: "#s = :cur",
-              ExpressionAttributeNames: { "#s": "status" },
-              ExpressionAttributeValues: {
-                ":cur": "GRADED",
+    const toGrading = storedStatus === "GRADED";
+    // 割り当て数を受験メタに持たせ、確定時の GRADED 化の条件にする（finalizeGrade）。
+    // 割り当て数を持たない既存データは、今の件数で初期化する
+    const attemptUpdate = {
+      Update: {
+        TableName: deps.tableName,
+        Key: keys.attemptMeta(input.attemptId),
+        UpdateExpression: toGrading
+          ? "SET #s = :next, GSI2PK = :gsi2pk, assignmentCount = :count"
+          : "SET assignmentCount = :count",
+        ConditionExpression:
+          "#s = :cur AND (attribute_not_exists(assignmentCount) OR assignmentCount = :prev)",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":cur": storedStatus,
+          ":prev": assignmentCount,
+          ":count": assignmentCount + 1,
+          ...(toGrading
+            ? {
                 ":next": "GRADING",
                 ":gsi2pk": keys.attemptsByStatus("GRADING", "").GSI2PK,
-              },
-            },
-          }
-        : {
-            ConditionCheck: {
-              TableName: deps.tableName,
-              Key: metaKey,
-              ConditionExpression: "#s = :cur",
-              ExpressionAttributeNames: { "#s": "status" },
-              ExpressionAttributeValues: { ":cur": bundle.attempt.status },
-            },
-          };
+              }
+            : {}),
+        },
+      },
+    };
     try {
       await deps.ddb.send(
         new TransactWriteCommand({
@@ -114,12 +117,13 @@ export async function assignGraders(
                 ConditionExpression: "attribute_not_exists(PK)",
               },
             },
-            attemptCondition,
+            attemptUpdate,
           ],
         }),
       );
       assigned.push(grader);
-      if (status === "GRADED") status = "GRADING";
+      assignmentCount += 1;
+      if (toGrading) storedStatus = "GRADING";
     } catch (e) {
       const reasons = transactionFailureCodes(e);
       if (reasons?.[0] === "ConditionalCheckFailed") {
@@ -163,22 +167,25 @@ export async function listAssignmentsForGrader(
     startKey = res.LastEvaluatedKey;
   } while (startKey);
 
+  // 受験の状態を確認するため、受験メタを並列に読む（順番に読むと件数に比例して遅くなる）
+  const own = items.filter((item) => item.graderSub === graderSub);
+  const attempts = await Promise.all(
+    own.map((item) => getAttemptMeta(deps, String(item.attemptId))),
+  );
   const summaries: GraderAssignmentSummary[] = [];
-  for (const item of items) {
-    if (item.graderSub !== graderSub) continue;
-    const attemptId = String(item.attemptId);
-    const attempt = await getAttemptMeta(deps, attemptId);
-    if (!attempt || !GRADABLE_STATUSES.includes(attempt.status)) continue;
+  own.forEach((item, i) => {
+    const attempt = attempts[i];
+    if (!attempt || !GRADABLE_STATUSES.includes(attempt.status)) return;
     const assignment = toAssignment(item);
     summaries.push({
-      attemptId,
+      attemptId: attempt.attemptId,
       examTitle: attempt.examTitle,
       candidateName: attempt.candidateName,
       ...(attempt.submittedAt ? { submittedAt: attempt.submittedAt } : {}),
       assignedAt: assignment.assignedAt,
       assignmentStatus: assignment.status,
     });
-  }
+  });
   return summaries;
 }
 
@@ -362,7 +369,8 @@ export async function finalizeGrade(
     throw e;
   }
 
-  // 全員確定したら GRADED。同時に確定した場合も、後から確定した側が全員分を確認できる
+  // 全員確定したら GRADED。同時に確定した場合も、後から確定した側が全員分を確認できる。
+  // 読み込んだ後に採点者が追加されていたら GRADED にしない（割り当て数を条件にする）
   const bundle = await getAttemptBundle(deps, input.attemptId);
   let attemptStatus = bundle?.attempt.status ?? view.attempt.status;
   if (
@@ -376,11 +384,13 @@ export async function finalizeGrade(
           TableName: deps.tableName,
           Key: keys.attemptMeta(input.attemptId),
           UpdateExpression: "SET #s = :graded, gradedAt = :now, GSI2PK = :gsi2pk",
-          ConditionExpression: "#s = :grading",
+          ConditionExpression:
+            "#s = :grading AND (attribute_not_exists(assignmentCount) OR assignmentCount = :count)",
           ExpressionAttributeNames: { "#s": "status" },
           ExpressionAttributeValues: {
             ":graded": "GRADED",
             ":grading": "GRADING",
+            ":count": bundle.assignments.length,
             ":now": now,
             ":gsi2pk": keys.attemptsByStatus("GRADED", "").GSI2PK,
           },

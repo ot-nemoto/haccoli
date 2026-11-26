@@ -117,7 +117,11 @@ describe("assignGraders", () => {
       status: "ASSIGNED",
     });
     expect(JSON.stringify(items?.[0]?.Put?.Item)).not.toContain("@");
-    expect(items?.[1]?.ConditionCheck?.ExpressionAttributeValues).toEqual({ ":cur": "SUBMITTED" });
+    expect(items?.[1]?.Update?.ExpressionAttributeValues).toEqual({
+      ":cur": "SUBMITTED",
+      ":prev": 0,
+      ":count": 1,
+    });
   });
 
   it("採点完了（GRADED）の受験に追加したら GRADING に戻す", async () => {
@@ -129,6 +133,41 @@ describe("assignGraders", () => {
     expect(items?.[1]?.Update?.ExpressionAttributeValues).toMatchObject({
       ":cur": "GRADED",
       ":next": "GRADING",
+    });
+  });
+
+  it("GRADED の受験に 2 人まとめて追加すると、2 人目は GRADING を条件にする", async () => {
+    withBundle({ status: "GRADED" }, [assignment("g0", "DONE")]);
+    ddbMock
+      .on(QueryCommand, {
+        IndexName: "GSI1",
+        ExpressionAttributeValues: { ":pk": "EMAIL#g1@example.com" },
+      })
+      .resolves({ Items: [grader] })
+      .on(QueryCommand, {
+        IndexName: "GSI1",
+        ExpressionAttributeValues: { ":pk": "EMAIL#g2@example.com" },
+      })
+      .resolves({ Items: [{ ...grader, sub: "g2", email: "g2@example.com" }] });
+    ddbMock.on(TransactWriteCommand).resolves({});
+    const res = await assignGraders(deps, {
+      attemptId: "at1",
+      graderEmails: ["g1@example.com", "g2@example.com"],
+    });
+    expect(res.assigned.map((g) => g.sub)).toEqual(["g1", "g2"]);
+    const calls = ddbMock.commandCalls(TransactWriteCommand);
+    expect(
+      calls[0]?.args[0].input.TransactItems?.[1]?.Update?.ExpressionAttributeValues,
+    ).toMatchObject({
+      ":cur": "GRADED",
+      ":next": "GRADING",
+      ":prev": 1,
+      ":count": 2,
+    });
+    expect(calls[1]?.args[0].input.TransactItems?.[1]?.Update?.ExpressionAttributeValues).toEqual({
+      ":cur": "GRADING",
+      ":prev": 2,
+      ":count": 3,
     });
   });
 
@@ -286,7 +325,22 @@ describe("finalizeGrade", () => {
     ).toMatchObject({
       ":graded": "GRADED",
       ":grading": "GRADING",
+      ":count": 1,
     });
+  });
+
+  it("読み込んだ後に採点者が追加されていたら GRADING のまま", async () => {
+    withBundle({ status: "GRADING" }, [assignment("g1", "DRAFT"), grade("g1")]);
+    ddbMock.on(TransactWriteCommand).callsFake(() => {
+      withBundle({ status: "GRADING" }, [assignment("g1", "DONE"), grade("g1")]);
+      return {};
+    });
+    // 割り当て数の条件が合わない（別の採点者が追加された）
+    ddbMock
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error("failed"), { name: "ConditionalCheckFailedException" }));
+    const res = await finalizeGrade(deps, { attemptId: "at1", graderSub: "g1", version: 1 });
+    expect(res.attemptStatus).toBe("GRADING");
   });
 
   it("未確定の採点者が残っていれば GRADING のまま", async () => {
