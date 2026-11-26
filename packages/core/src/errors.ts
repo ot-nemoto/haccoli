@@ -10,7 +10,13 @@ export class ValidationError extends DomainError {}
 /** 状態が操作を許さない（提出済み・期限切れ・未開始など） */
 export class StateError extends DomainError {
   constructor(
-    readonly reason: "NOT_STARTED" | "ALREADY_SUBMITTED" | "EXPIRED" | "CANCELED" | "INVALID",
+    readonly reason:
+      | "NOT_STARTED"
+      | "ALREADY_SUBMITTED"
+      | "EXPIRED"
+      | "CANCELED"
+      | "ALREADY_FINALIZED"
+      | "INVALID",
     message: string,
   ) {
     super(message);

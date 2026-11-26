@@ -114,17 +114,19 @@ npm run admin -- -e <dev|prod> <command> [options]
 npm run admin -- --help
 ```
 
-| コマンド                                                       | 内容                                                                        |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `candidate:add --email --name` / `grader:add --email --name`   | 登録                                                                        |
-| `candidate:list` / `grader:list`                               | 一覧                                                                        |
-| `candidate:disable --email` / `grader:disable --email`         | 無効化                                                                      |
-| `exam:publish --dir exams/<examId> [--dry-run]`                | 課題定義を検証して投入（新しい版を作成。同じ内容なら何もしない）            |
-| `exam:list`                                                    | 課題と最新版の一覧                                                          |
-| `attempt:issue --email --exam --deadline YYYY-MM-DD [--force]` | 受験を発行（最新版、期限 = 指定日 23:59 JST。当日指定は `--force`）         |
-| `attempt:extend --attempt --deadline YYYY-MM-DD [--force]`     | 受験期限を変更（期限切れ `EXPIRED` からの復帰を含む。提出済み・取消は不可） |
-| `attempt:list [--status]`                                      | 受験の一覧（期限切れはバッチ前でも `EXPIRED` と表示）                       |
-| `web:config`                                                   | ローカル開発用の SPA 設定を生成                                             |
+| コマンド                                                       | 内容                                                                          |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `candidate:add --email --name` / `grader:add --email --name`   | 登録                                                                          |
+| `candidate:list` / `grader:list`                               | 一覧                                                                          |
+| `candidate:disable --email` / `grader:disable --email`         | 無効化                                                                        |
+| `exam:publish --dir exams/<examId> [--dry-run]`                | 課題定義を検証して投入（新しい版を作成。同じ内容なら何もしない）              |
+| `exam:list`                                                    | 課題と最新版の一覧                                                            |
+| `attempt:issue --email --exam --deadline YYYY-MM-DD [--force]` | 受験を発行（最新版、期限 = 指定日 23:59 JST。当日指定は `--force`）           |
+| `attempt:extend --attempt --deadline YYYY-MM-DD [--force]`     | 受験期限を変更（期限切れ `EXPIRED` からの復帰を含む。提出済み・取消は不可）   |
+| `attempt:list [--status]`                                      | 受験の一覧（期限切れはバッチ前でも `EXPIRED` と表示）                         |
+| `attempt:assign --attempt --grader <email...>`                 | 採点者を割り当て（複数可。EXPIRED / CANCELED は不可。割り当ての解除は未対応） |
+| `result:export --exam [--out results.csv]`                     | 採点結果を CSV 出力（受験 × 採点者ごとに 1 行。候補者の個人情報を含む）       |
+| `web:config`                                                   | ローカル開発用の SPA 設定を生成                                               |
 
 prod に対する変更操作は確認プロンプトが出る（`-y` で省略）。
 

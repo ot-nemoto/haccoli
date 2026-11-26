@@ -22,7 +22,7 @@ import { saveAnswerRequestSchema, uploadUrlRequestSchema } from "@haccoli/shared
 import { Hono } from "hono";
 import type { AppEnv } from "./auth.js";
 import type { ApiDeps } from "./deps.js";
-import { ApiError } from "./errors.js";
+import { invalidRequest } from "./errors.js";
 
 /**
  * 候補者 API（docs/design.md §7.2）。/api/candidate/* に requireRole("candidate") 済みでマウントする。
@@ -72,7 +72,7 @@ export function candidateRoutes(deps: ApiDeps) {
 
   app.put("/attempts/:attemptId/answers/:qid", async (c) => {
     const body = saveAnswerRequestSchema.safeParse(await c.req.json().catch(() => undefined));
-    if (!body.success) throw new ApiError(400, "VALIDATION", "リクエストの形式が不正です");
+    if (!body.success) throw invalidRequest(body.error);
     const saved = await saveAnswer(deps, {
       attemptId: c.req.param("attemptId"),
       candidateSub: c.get("user").sub,
@@ -85,7 +85,7 @@ export function candidateRoutes(deps: ApiDeps) {
 
   app.post("/attempts/:attemptId/answers/:qid/upload-url", async (c) => {
     const body = uploadUrlRequestSchema.safeParse(await c.req.json().catch(() => undefined));
-    if (!body.success) throw new ApiError(400, "VALIDATION", "リクエストの形式が不正です");
+    if (!body.success) throw invalidRequest(body.error);
     const res = await createUploadUrl(deps, {
       attemptId: c.req.param("attemptId"),
       candidateSub: c.get("user").sub,

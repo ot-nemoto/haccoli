@@ -255,3 +255,90 @@ button.secondary {
 .file-answer progress {
   width: 100%;
 }
+
+/* 採点 */
+table.list {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+table.list th,
+table.list td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #d0d7de;
+  text-align: left;
+}
+.badge-assign-draft {
+  background: #ddf4ff;
+  border-color: #54aeff;
+}
+.badge-assign-done,
+.badge-correct {
+  background: #dafbe1;
+  border-color: #4ac26b;
+}
+.badge-correct {
+  margin-left: 0.5rem;
+}
+details.intro {
+  margin: 1rem 0;
+}
+.grade-row {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 1.5rem;
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+}
+@media (max-width: 760px) {
+  .grade-row {
+    grid-template-columns: 1fr;
+  }
+}
+.grade-row h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+.grade-row h3 {
+  font-size: 0.95rem;
+  color: #59636e;
+}
+.grade-input {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+  padding-left: 1.5rem;
+  border-left: 1px solid #d0d7de;
+}
+@media (max-width: 760px) {
+  .grade-input {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+.grade-input textarea,
+.question textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+}
+.choice-result {
+  list-style: none;
+  padding: 0;
+}
+.choice-result li.selected {
+  font-weight: 600;
+}
+pre.raw {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.75rem;
+  background: #f6f8fa;
+  border-radius: 6px;
+}
