@@ -129,4 +129,11 @@ describe("attachmentDisposition", () => {
     expect(v).not.toMatch(/[\r\n]/);
     expect(v.split('"').length).toBe(3);
   });
+
+  it("filename* では ' ( ) * ! もエンコードする（RFC 5987）", async () => {
+    const { attachmentDisposition } = await import("./files.js");
+    expect(attachmentDisposition("it's (1)!*.zip")).toContain(
+      "filename*=UTF-8''it%27s%20%281%29%21%2A.zip",
+    );
+  });
 });

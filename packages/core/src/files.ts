@@ -36,7 +36,15 @@ export const DOWNLOAD_URL_EXPIRES_SECONDS = 300;
 export function attachmentDisposition(fileName: string): string {
   const display = displayFileName(fileName) || "submission.zip";
   const ascii = storageFileName(display);
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(display)}`;
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeRfc5987(display)}`;
+}
+
+/** encodeURIComponent がそのまま残す ' ( ) * ! も、RFC 5987 の attr-char にないので %XX にする */
+function encodeRfc5987(value: string): string {
+  return encodeURIComponent(value).replace(
+    /['()*!]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }
 
 /** 署名付き POST の有効期限（§6.2） */
