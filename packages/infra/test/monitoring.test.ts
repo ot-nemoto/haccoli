@@ -75,7 +75,8 @@ describe("監視（prod）", () => {
         MetricName: metricName,
         Statistic: "Maximum",
         Threshold: threshold,
-        TreatMissingData: "notBreaching",
+        // 送信がない時間に「復旧」を通知しない
+        TreatMissingData: "ignore",
       });
     }
   });
@@ -96,6 +97,29 @@ describe("監視（prod）", () => {
   });
 });
 
+describe("監視（SNS のポリシー）", () => {
+  it("SSL 必須にしつつ、自アカウントの CloudWatch アラームからの発行を許可する", () => {
+    prod.hasResourceProperties("AWS::SNS::TopicPolicy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Effect: "Deny",
+            Condition: { Bool: { "aws:SecureTransport": "false" } },
+          }),
+          Match.objectLike({
+            Effect: "Allow",
+            Principal: { Service: "cloudwatch.amazonaws.com" },
+            Action: "sns:Publish",
+            Condition: Match.objectLike({
+              StringEquals: { "aws:SourceAccount": "123456789012" },
+            }),
+          }),
+        ]),
+      },
+    });
+  });
+});
+
 describe("監視（dev）", () => {
   it("アラームと通知用の SNS は作らない", () => {
     dev.resourceCountIs("AWS::CloudWatch::Alarm", 0);
@@ -106,7 +130,7 @@ describe("監視（dev）", () => {
 describe("loadConfig", () => {
   const ctx = (values: Record<string, string>) => (key: string) => values[key];
 
-  it("prod で通知先がなければエラー、dev は不要", () => {
+  it("prod で通知先がなければエラー、dev は不要。空文字は未指定として扱う", () => {
     const prev = process.env.HACCOLI_ALARM_EMAIL;
     delete process.env.HACCOLI_ALARM_EMAIL;
     try {
@@ -120,6 +144,11 @@ describe("loadConfig", () => {
         loadConfig(ctx({ env: "prod", fromEmail: "a@example.com", alarmEmail: "o@example.com" }))
           .alarmEmail,
       ).toBe("o@example.com");
+      process.env.HACCOLI_ALARM_EMAIL = "env@example.com";
+      expect(
+        loadConfig(ctx({ env: "prod", fromEmail: "a@example.com", alarmEmail: "" })).alarmEmail,
+      ).toBe("env@example.com");
+      delete process.env.HACCOLI_ALARM_EMAIL;
     } finally {
       if (prev !== undefined) process.env.HACCOLI_ALARM_EMAIL = prev;
     }

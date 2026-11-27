@@ -3,7 +3,9 @@ import {
   type aws_apigatewayv2 as apigw,
   aws_cloudwatch as cloudwatch,
   Duration,
+  aws_iam as iam,
   type aws_lambda as lambda,
+  Stack,
   aws_sns as sns,
   aws_sns_subscriptions as subscriptions,
 } from "aws-cdk-lib";
@@ -40,6 +42,22 @@ export class Monitoring extends Construct {
       displayName: `haccoli-${props.envName} alarms`,
       enforceSSL: true,
     });
+    // enforceSSL はトピックポリシーを作り、既定のポリシー（同一アカウントの発行を許可）を置き換える。
+    // CloudWatch アラームからの発行を明示的に許可する（自アカウントのアラームのみ）
+    this.topic.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: "AllowCloudWatchAlarms",
+        principals: [new iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+        actions: ["sns:Publish"],
+        resources: [this.topic.topicArn],
+        conditions: {
+          StringEquals: { "aws:SourceAccount": Stack.of(this).account },
+          ArnLike: {
+            "aws:SourceArn": `arn:${Stack.of(this).partition}:cloudwatch:${Stack.of(this).region}:${Stack.of(this).account}:alarm:haccoli-${props.envName}-*`,
+          },
+        },
+      }),
+    );
     this.topic.addSubscription(new subscriptions.EmailSubscription(props.alarmEmail));
     const notify = new actions.SnsAction(this.topic);
 
@@ -83,7 +101,7 @@ export class Monitoring extends Construct {
   }
 }
 
-/** SES の評価指標はアカウント単位（ディメンションなし）。送信がない時間は欠損になる */
+/** SES の評価指標はアカウント単位（ディメンションなし） */
 function sesAlarm(
   scope: Construct,
   id: string,
@@ -101,6 +119,7 @@ function sesAlarm(
     threshold: props.threshold,
     evaluationPeriods: 1,
     comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-    treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    // 送信がない時間は欠損になる。欠損で OK（復旧）に戻さず、直前の状態を保つ
+    treatMissingData: cloudwatch.TreatMissingData.IGNORE,
   });
 }

@@ -30,13 +30,14 @@ export function loadEnvName(get: (key: string) => unknown): EnvName {
 
 export function loadConfig(get: (key: string) => unknown): EnvConfig {
   const envName = loadEnvName(get);
-  const fromEmail = (get("fromEmail") as string | undefined) ?? process.env.HACCOLI_FROM_EMAIL;
+  // 空文字（-c fromEmail= など）は未指定として環境変数に切り替える
+  const fromEmail = (get("fromEmail") as string | undefined) || process.env.HACCOLI_FROM_EMAIL;
   if (!fromEmail) {
     throw new Error(
       "OTP メールの送信元が未指定です。-c fromEmail=... または HACCOLI_FROM_EMAIL を設定してください",
     );
   }
-  const alarmEmail = (get("alarmEmail") as string | undefined) ?? process.env.HACCOLI_ALARM_EMAIL;
+  const alarmEmail = (get("alarmEmail") as string | undefined) || process.env.HACCOLI_ALARM_EMAIL;
   if (envName === "prod" && !alarmEmail) {
     throw new Error(
       "アラームの通知先が未指定です。-c alarmEmail=... または HACCOLI_ALARM_EMAIL を設定してください",
