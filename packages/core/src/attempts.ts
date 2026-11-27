@@ -105,7 +105,9 @@ export async function issueAttempt(
 
   const user = await findUserByEmail(deps, input.email);
   if (!user) throw new NotFoundError(`登録されていないメールアドレスです: ${input.email}`);
-  if (user.role !== "candidate") throw new ValidationError(`候補者ではありません: ${user.email}`);
+  if (!user.roles.includes("candidate")) {
+    throw new ValidationError(`候補者ではありません: ${user.email}`);
+  }
   if (user.disabled) throw new ValidationError(`無効化された候補者です: ${user.email}`);
 
   const exam = await getExamSummary(deps, input.examId);

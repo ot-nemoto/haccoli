@@ -9,7 +9,8 @@ import type { Role } from "./roles.js";
 export interface MeResponse {
   sub: string;
   name: string;
-  role: Role;
+  /** トークンのグループと登録情報の両方にあるロール（§14.3） */
+  roles: Role[];
 }
 
 export type ApiErrorCode =

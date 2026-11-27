@@ -37,14 +37,14 @@ describe("registerUser", () => {
     const profile = await registerUser(deps, {
       email: " Cand@Example.com ",
       name: "山田 太郎",
-      role: "candidate",
+      roles: ["candidate"],
     });
 
     expect(profile).toEqual({
       sub: "sub-1",
       email: "cand@example.com",
       name: "山田 太郎",
-      role: "candidate",
+      roles: ["candidate"],
       disabled: false,
       createdAt: "2026-11-19T00:00:00.000Z",
     });
@@ -65,14 +65,14 @@ describe("registerUser", () => {
       PK: "USER#sub-1",
       SK: "PROFILE",
       GSI1PK: "EMAIL#cand@example.com",
-      role: "candidate",
+      roles: ["candidate"],
     });
   });
 
   it("登録済みメールアドレスはエラー", async () => {
     ddbMock.on(QueryCommand).resolves({ Items: [{ sub: "x", email: "cand@example.com" }] });
     await expect(
-      registerUser(deps, { email: "cand@example.com", name: "x", role: "grader" }),
+      registerUser(deps, { email: "cand@example.com", name: "x", roles: ["grader"] }),
     ).rejects.toBeInstanceOf(UserAlreadyExistsError);
     expect(cognitoMock.commandCalls(AdminCreateUserCommand)).toHaveLength(0);
   });
@@ -80,7 +80,7 @@ describe("registerUser", () => {
   it("DynamoDB 保存に失敗したら Cognito ユーザーを削除して巻き戻す", async () => {
     ddbMock.on(PutCommand).rejects(new Error("boom"));
     await expect(
-      registerUser(deps, { email: "cand@example.com", name: "x", role: "candidate" }),
+      registerUser(deps, { email: "cand@example.com", name: "x", roles: ["candidate"] }),
     ).rejects.toThrow("boom");
     expect(cognitoMock.commandCalls(AdminDeleteUserCommand)).toHaveLength(1);
   });

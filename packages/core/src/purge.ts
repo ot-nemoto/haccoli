@@ -56,9 +56,9 @@ export async function planPurge(
 ): Promise<PurgePlan> {
   const user = await findUserByEmail(deps, email);
   if (!user) throw new UserNotFoundError(email);
-  if (user.role !== "candidate") {
+  if (!user.roles.includes("candidate")) {
     throw new ValidationError(
-      `候補者ではありません（${user.role}）。採点者は grader:disable で無効化してください`,
+      `候補者ではありません（${user.roles.join(", ")}）。採点者・管理者は無効化してください`,
     );
   }
 
