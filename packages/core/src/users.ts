@@ -88,7 +88,7 @@ export async function registerUser(
 ): Promise<UserProfile> {
   const email = normalizeEmail(input.email);
   const name = input.name.trim();
-  if (!name) throw new Error("氏名は必須です");
+  if (!name) throw new ValidationError("氏名は必須です");
   const problem = rolesProblem(input.roles);
   if (problem) throw new ValidationError(problem);
   const roles = sortRoles(input.roles);

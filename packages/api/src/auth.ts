@@ -43,7 +43,7 @@ function claimsOf(c: Context<AppEnv>): Record<string, unknown> | undefined {
  * - Cognito グループと DynamoDB の roles の両方にあるロールを 1 つ以上持つこと（§14.3）。
  *   付与は次にトークンが発行されたときから、削除は DynamoDB を変えた時点で有効になる
  */
-export function authenticate(deps: ApiDeps): MiddlewareHandler<AppEnv> {
+export function authenticate(deps: Pick<ApiDeps, "ddb" | "tableName">): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const claims = claimsOf(c);
     const sub = claims?.sub;

@@ -1,3 +1,5 @@
+import { ValidationError } from "./errors.js";
+
 // 実用上十分な簡易チェック（厳密な RFC 準拠は目指さない）
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -5,7 +7,7 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function normalizeEmail(input: string): string {
   const email = input.trim().toLowerCase();
   if (!EMAIL_PATTERN.test(email)) {
-    throw new Error(`メールアドレスの形式が不正です: ${input}`);
+    throw new ValidationError(`メールアドレスの形式が不正です: ${input}`);
   }
   return email;
 }
