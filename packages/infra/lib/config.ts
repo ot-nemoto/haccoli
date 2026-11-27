@@ -9,6 +9,8 @@ export interface EnvConfig {
   fromName: string;
   /** fromEmail がドメイン認証済み SES ID の配下である場合に指定（例: recruit.example.co.jp） */
   sesVerifiedDomain?: string;
+  /** アラームの通知先メールアドレス（prod のみ必須。dev はアラームを作らない） */
+  alarmEmail?: string;
   /** 永続データ（User Pool / テーブル）の削除ポリシー */
   removalPolicy: RemovalPolicy;
 }
@@ -16,6 +18,7 @@ export interface EnvConfig {
 /**
  * 環境ごとの設定。送信元アドレスはまだ決まっていないため、
  * cdk のコンテキスト（-c fromEmail=...）または環境変数 HACCOLI_FROM_EMAIL で与える。
+ * アラームの通知先も同様に -c alarmEmail=... または HACCOLI_ALARM_EMAIL で与える（コードに書かない）。
  */
 export function loadEnvName(get: (key: string) => unknown): EnvName {
   const envName = (get("env") ?? "dev") as string;
@@ -33,11 +36,18 @@ export function loadConfig(get: (key: string) => unknown): EnvConfig {
       "OTP メールの送信元が未指定です。-c fromEmail=... または HACCOLI_FROM_EMAIL を設定してください",
     );
   }
+  const alarmEmail = (get("alarmEmail") as string | undefined) ?? process.env.HACCOLI_ALARM_EMAIL;
+  if (envName === "prod" && !alarmEmail) {
+    throw new Error(
+      "アラームの通知先が未指定です。-c alarmEmail=... または HACCOLI_ALARM_EMAIL を設定してください",
+    );
+  }
   return {
     envName,
     fromEmail,
     fromName: (get("fromName") as string | undefined) ?? "採用課題システム",
     sesVerifiedDomain: get("sesVerifiedDomain") as string | undefined,
+    ...(alarmEmail ? { alarmEmail } : {}),
     removalPolicy: envName === "prod" ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
   };
 }

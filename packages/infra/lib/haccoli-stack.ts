@@ -4,6 +4,7 @@ import { Api } from "./api.js";
 import { Auth } from "./auth.js";
 import type { EnvConfig } from "./config.js";
 import { Data } from "./data.js";
+import { Monitoring } from "./monitoring.js";
 import { Storage, submissionsBucketName } from "./storage.js";
 import { Web } from "./web.js";
 
@@ -51,6 +52,17 @@ export class HaccoliStack extends Stack {
       allowedOrigins:
         props.config.envName === "dev" ? [webOrigin, "http://localhost:5173"] : [webOrigin],
     });
+
+    // 監視は prod のみ（dev は CloudWatch Logs で確認する。docs/design.md §10）
+    if (props.config.envName === "prod") {
+      if (!props.config.alarmEmail) throw new Error("prod には alarmEmail が必要です");
+      new Monitoring(this, "Monitoring", {
+        envName: props.config.envName,
+        alarmEmail: props.config.alarmEmail,
+        httpApi: api.httpApi,
+        apiFunction: api.handler,
+      });
+    }
 
     new CfnOutput(this, "UserPoolId", { value: auth.userPool.userPoolId });
     new CfnOutput(this, "UserPoolClientId", { value: auth.webClient.userPoolClientId });
