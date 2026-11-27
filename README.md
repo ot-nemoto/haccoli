@@ -16,6 +16,7 @@
 | `packages/infra`     | AWS CDK（Cognito / DynamoDB / API Gateway + Lambda / S3 + CloudFront）                                 |
 | `packages/web`       | React + Vite SPA（候補者・採点者画面）                                                                 |
 | `packages/admin-cli` | 管理者用 CLI                                                                                           |
+| `packages/e2e`       | dev 環境に対する E2E テスト（Playwright）                                                              |
 
 ## 開発コマンド
 
@@ -25,6 +26,22 @@ npm run typecheck   # 型チェック
 npm test            # ユニットテスト
 npm run lint        # Biome
 ```
+
+### E2E テスト（dev 環境）
+
+デプロイ済みの dev 環境に対して、受験の発行 → 候補者の回答・提出 → 採点者の割り当て → 採点・確定までを Playwright で確かめる。
+
+```bash
+npx -w @haccoli/e2e playwright install chromium   # 初回のみ
+npm run e2e
+```
+
+- dev アカウントの AWS 認証情報が必要（管理 CLI と同じ）。対象は dev に固定しており、prod には実行できない
+- ログインはメール OTP のため自動化できない。テスト用ユーザーに限り、実行ごとに生成したパスワードで Cognito のトークンを取り、画面の sessionStorage に入れて開く。**OTP を入力するログイン画面はテストの対象外**
+- テスト用の候補者（`e2e-cand-…@example.com`）は実行ごとに作り、終了時に `user:purge` と同じ処理で削除する（途中で失敗しても、取消・採点の確定をしてから削除する）
+- 採点者 `e2e-grader@example.com` は削除できないため使い回す。終了時にパスワードを再びランダムな値に戻し、リフレッシュトークンを失効させる（アクセストークンは発行から 60 分まで有効）
+- 課題 `exams/sample-2026` を投入する（内容が同じなら何もしない）
+- 通常の CI（`npm test`）には含めない。失敗時のスクリーンショットとトレースは `packages/e2e/test-results/` に出る。トレースにはトークンを含む通信が残るため、共有しない（確認後に削除する）
 
 ## デプロイ（GitHub Actions）
 

@@ -17,7 +17,8 @@
     "web:build": "npm run build -w @haccoli/web",
     "cdk": "npm run cdk -w @haccoli/infra --",
     "deploy": "npm run web:build && npm run cdk -- deploy",
-    "admin": "npm run start -w @haccoli/admin-cli --"
+    "admin": "npm run start -w @haccoli/admin-cli --",
+    "e2e": "npm run e2e -w @haccoli/e2e --"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.8",

@@ -1,0 +1,19 @@
+{
+  "name": "@haccoli/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1172.0",
+    "@haccoli/admin-cli": "*",
+    "@haccoli/core": "*",
+    "@haccoli/shared": "*"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}
