@@ -43,6 +43,7 @@ export interface AttemptRecord {
   deadlineAt: string;
   startedAt?: string;
   submittedAt?: string;
+  canceledAt?: string;
 }
 
 export interface AnswerRecord {
@@ -580,6 +581,7 @@ function toAttempt(item: Record<string, unknown>): AttemptRecord {
     deadlineAt: String(item.deadlineAt),
     ...(item.startedAt ? { startedAt: String(item.startedAt) } : {}),
     ...(item.submittedAt ? { submittedAt: String(item.submittedAt) } : {}),
+    ...(item.canceledAt ? { canceledAt: String(item.canceledAt) } : {}),
   };
 }
 
@@ -737,13 +739,14 @@ export async function cancelAttempt(
         TableName: deps.tableName,
         Key: keys.attemptMeta(input.attemptId),
         UpdateExpression: "SET #s = :canceled, canceledAt = :now, GSI2PK = :gsi2pk",
-        // 読み取り後に開始・提出・期限処理された場合は失敗させる
-        ConditionExpression: "#s = :cur",
+        // 読み取り後に開始・提出・期限処理された場合や、期限を迎えた場合は失敗させる
+        ConditionExpression: "#s = :cur AND deadlineAt > :now",
         ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
           ":canceled": "CANCELED",
           ":cur": before.status,
-          ":now": now.toISOString(),
+          // 判定から書き込みまでに期限を迎えた場合も取り消さないよう、書き込み直前の時刻を使う
+          ":now": nowOf(deps).toISOString(),
           ":gsi2pk": keys.attemptsByStatus("CANCELED", "").GSI2PK,
         },
         ReturnValues: "ALL_NEW",

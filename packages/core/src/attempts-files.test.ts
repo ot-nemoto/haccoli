@@ -240,11 +240,13 @@ describe("cancelAttempt", () => {
     ["未着手", { status: "NOT_STARTED" as const, startedAt: undefined }],
   ])("%s の受験を取り消す（読み込み時の状態を条件にする）", async (_, a) => {
     withAttempt(a);
-    ddbMock.on(UpdateCommand).resolves({ Attributes: { ...attempt, ...a, status: "CANCELED" } });
+    ddbMock.on(UpdateCommand).resolves({
+      Attributes: { ...attempt, ...a, status: "CANCELED", canceledAt: NOW },
+    });
     const res = await cancel();
-    expect(res.after.status).toBe("CANCELED");
+    expect(res.after).toMatchObject({ status: "CANCELED", canceledAt: NOW });
     const input = ddbMock.commandCalls(UpdateCommand)[0]?.args[0].input;
-    expect(input?.ConditionExpression).toBe("#s = :cur");
+    expect(input?.ConditionExpression).toBe("#s = :cur AND deadlineAt > :now");
     expect(input?.ExpressionAttributeValues).toEqual({
       ":canceled": "CANCELED",
       ":cur": (a as Partial<AttemptRecord>).status ?? "IN_PROGRESS",
@@ -265,7 +267,7 @@ describe("cancelAttempt", () => {
     expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
   });
 
-  it("読み込み後に提出された場合は StateError", async () => {
+  it("読み込み後に提出された・期限を迎えた場合は StateError", async () => {
     withAttempt();
     ddbMock
       .on(UpdateCommand)

@@ -124,6 +124,7 @@ export function addExamCommands(program: Command, globals: Globals) {
       const { before, after } = await cancelAttempt(ctx.deps, { attemptId: opts.attempt });
       console.log(`取り消しました: ${after.attemptId}（${after.candidateName}）`);
       console.log(`  ステータス: ${before.status} → ${after.status}`);
+      if (after.canceledAt) console.log(`  取消日時:   ${jst(after.canceledAt)}`);
     });
 
   program
