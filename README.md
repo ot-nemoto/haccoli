@@ -34,6 +34,9 @@ npm run lint        # Biome
 ```bash
 npx -w @haccoli/e2e playwright install chromium   # 初回のみ
 npm run e2e
+
+# デプロイ前の画面の変更を試す場合は、ローカルの SPA（「ローカルで SPA を動かす」）に向ける
+HACCOLI_E2E_BASE_URL=http://localhost:5173 npm run e2e
 ```
 
 - dev アカウントの AWS 認証情報が必要（管理 CLI と同じ）。対象は dev に固定しており、prod には実行できない

@@ -90,7 +90,8 @@ export async function prepare(ctx: Context, candidateEmail: string): Promise<Fix
 
   return {
     ctx,
-    webUrl: ctx.outputs.WebUrl,
+    // ローカルの画面（npm run web:dev）で試す場合は HACCOLI_E2E_BASE_URL で指定する
+    webUrl: process.env.HACCOLI_E2E_BASE_URL || ctx.outputs.WebUrl,
     attemptId: attempt.attemptId,
     candidate: { user: candidate, session: await sessionFor(ctx, candidate) },
     grader: { user: grader, session: await sessionFor(ctx, grader) },

@@ -50,10 +50,7 @@ test.describe
       await expect(page.locator("#q-q4")).toContainText("answer.zip");
 
       await page.getByRole("button", { name: "すべて保存" }).click();
-      // 保存の通信中に提出すると未保存と判定される不具合（#19）を避けるため、保存の完了を待つ。
-      // #19 の修正後にこの待ち合わせを外す
-      await expect(page.getByRole("button", { name: "すべて保存" })).toBeDisabled();
-      await expect(page.getByText(/保存中…|未保存/)).toHaveCount(0);
+      // 保存の完了を待たずに提出する（保存中の提出は、保存の完了を待ってから判定される。#19）
       await page.getByRole("button", { name: "提出する" }).click();
       await page
         .getByRole("dialog", { name: "提出の確認" })
