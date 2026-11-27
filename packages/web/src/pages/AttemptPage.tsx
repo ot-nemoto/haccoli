@@ -15,6 +15,7 @@ import { Deadline, StatusBadge } from "../components/AttemptStatus.js";
 import { Markdown } from "../components/Markdown.js";
 import { emptyContent, type FieldState, QuestionField } from "../components/QuestionField.js";
 import { clearDraft, loadDraft, saveDraft } from "../lib/drafts.js";
+import { SerialRunner } from "../lib/serial.js";
 import { UploadError, uploadToS3 } from "../lib/upload.js";
 import { Layout } from "./Layout.js";
 
@@ -144,8 +145,6 @@ function AnswerForm(props: {
   }, [fields]);
 
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const inflight = useRef(new Set<string>());
-  const pending = useRef(new Set<string>());
 
   const patch = useCallback(
     (qid: string, update: Partial<FieldState>) =>
@@ -156,16 +155,11 @@ function AnswerForm(props: {
     [],
   );
 
-  const save = useCallback(
+  /** 1 問分を 1 回保存する。直接呼ばず save（直列化）を通す */
+  const saveOnce = useCallback(
     async (qid: string): Promise<void> => {
-      // 同じ問題の保存は直列化する（古い版で送って競合扱いになるのを防ぐ）
-      if (inflight.current.has(qid)) {
-        pending.current.add(qid);
-        return;
-      }
       const f = fieldsRef.current[qid];
       if (!f?.dirty || f.conflict) return;
-      inflight.current.add(qid);
       const sent = f.content;
       patch(qid, { saving: true, error: undefined });
       try {
@@ -206,13 +200,18 @@ function AnswerForm(props: {
         } else {
           patch(qid, { saving: false, error: messageOf(e) });
         }
-      } finally {
-        inflight.current.delete(qid);
-        if (pending.current.delete(qid)) void save(qid);
       }
     },
     [api, path, attemptId, onStateChanged, patch],
   );
+  const saveOnceRef = useRef(saveOnce);
+  useEffect(() => {
+    saveOnceRef.current = saveOnce;
+  }, [saveOnce]);
+  // 同じ問題の保存は直列化する（古い版で送って競合扱いになるのを防ぐ）。
+  // 通信中に要求された場合も、その保存と再保存が終わるまで待ってから解決する（提出前の判定のため。#19）
+  const [runner] = useState(() => new SerialRunner((qid) => saveOnceRef.current(qid)));
+  const save = useCallback((qid: string) => runner.run(qid), [runner]);
 
   /** ファイル提出: 署名付き POST を受け取り S3 へ直接送ってから、回答として登録する */
   const uploadFile = async (qid: string, file: File) => {
