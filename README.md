@@ -69,13 +69,14 @@ npm run cdk -- deploy Haccoli-ci-dev -c env=dev -c ci=true
 
 リポジトリの Settings → Environments で `dev`（prod の場合は `prod`）を作成し、以下を設定する。
 
-| 種別                | 名前                 | 値                                      |
-| ------------------- | -------------------- | --------------------------------------- |
-| Variable            | `AWS_ROLE_ARN`       | 手順 2 の `DeployRoleArn`               |
-| Variable            | `HACCOLI_FROM_EMAIL` | 手順 1 で検証した送信元アドレス         |
-| Variable（任意）    | `HACCOLI_REGION`     | 既定 `ap-northeast-1`                   |
-| Deployment branches | —                    | dev: `develop`、prod: `main` のみに制限 |
-| Required reviewers  | —                    | prod は設定を推奨                       |
+| 種別                  | 名前                  | 値                                                            |
+| --------------------- | --------------------- | ------------------------------------------------------------- |
+| Variable              | `AWS_ROLE_ARN`        | 手順 2 の `DeployRoleArn`                                     |
+| Variable              | `HACCOLI_FROM_EMAIL`  | 手順 1 で検証した送信元アドレス                               |
+| Variable（prod のみ） | `HACCOLI_ALARM_EMAIL` | アラームの通知先（prod は必須。未設定だとデプロイが失敗する） |
+| Variable（任意）      | `HACCOLI_REGION`      | 既定 `ap-northeast-1`                                         |
+| Deployment branches   | —                     | dev: `develop`、prod: `main` のみに制限                       |
+| Required reviewers    | —                     | prod は設定を推奨                                             |
 
 #### 4. デプロイ
 
@@ -97,7 +98,14 @@ npm run admin -- -e dev candidate:list
 ```bash
 export HACCOLI_FROM_EMAIL=sender@example.com
 npm run deploy -- Haccoli-dev -c env=dev
+
+# prod はアラームの通知先も必須
+export HACCOLI_ALARM_EMAIL=ops@example.com
+npm run deploy -- Haccoli-prod -c env=prod
 ```
+
+prod の初回デプロイ後、通知先に SNS の確認メールが届く。リンクを承認するまでアラームは通知されない。
+通知先を変えるときは、新しい値で再デプロイし、新しいアドレスで確認メールを承認する。
 
 ### ローカルで SPA を動かす
 
