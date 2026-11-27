@@ -15,6 +15,7 @@ import { Deadline, StatusBadge } from "../components/AttemptStatus.js";
 import { Markdown } from "../components/Markdown.js";
 import { emptyContent, type FieldState, QuestionField } from "../components/QuestionField.js";
 import { clearDraft, loadDraft, saveDraft } from "../lib/drafts.js";
+import { SerialRunner } from "../lib/serial.js";
 import { UploadError, uploadToS3 } from "../lib/upload.js";
 import { Layout } from "./Layout.js";
 
@@ -144,8 +145,6 @@ function AnswerForm(props: {
   }, [fields]);
 
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  const inflight = useRef(new Set<string>());
-  const pending = useRef(new Set<string>());
 
   const patch = useCallback(
     (qid: string, update: Partial<FieldState>) =>
@@ -156,16 +155,24 @@ function AnswerForm(props: {
     [],
   );
 
-  const save = useCallback(
+  /** 状態と参照の両方をすぐ更新する（直後に参照を読む提出前の判定のため） */
+  const patchNow = useCallback(
+    (qid: string, update: Partial<FieldState>) => {
+      const cur = fieldsRef.current[qid];
+      if (cur) fieldsRef.current = { ...fieldsRef.current, [qid]: { ...cur, ...update } };
+      patch(qid, update);
+    },
+    [patch],
+  );
+
+  /** ファイルの提出（S3 へのアップロードと回答の登録）。提出時に完了を待つ（#19） */
+  const uploads = useRef(new Map<string, Promise<void>>());
+
+  /** 1 問分を 1 回保存する。直接呼ばず save（直列化）を通す */
+  const saveOnce = useCallback(
     async (qid: string): Promise<void> => {
-      // 同じ問題の保存は直列化する（古い版で送って競合扱いになるのを防ぐ）
-      if (inflight.current.has(qid)) {
-        pending.current.add(qid);
-        return;
-      }
       const f = fieldsRef.current[qid];
       if (!f?.dirty || f.conflict) return;
-      inflight.current.add(qid);
       const sent = f.content;
       patch(qid, { saving: true, error: undefined });
       try {
@@ -206,13 +213,18 @@ function AnswerForm(props: {
         } else {
           patch(qid, { saving: false, error: messageOf(e) });
         }
-      } finally {
-        inflight.current.delete(qid);
-        if (pending.current.delete(qid)) void save(qid);
       }
     },
     [api, path, attemptId, onStateChanged, patch],
   );
+  const saveOnceRef = useRef(saveOnce);
+  useEffect(() => {
+    saveOnceRef.current = saveOnce;
+  }, [saveOnce]);
+  // 同じ問題の保存は直列化する（古い版で送って競合扱いになるのを防ぐ）。
+  // 通信中に要求された場合も、その保存と再保存が終わるまで待ってから解決する（提出前の判定のため。#19）
+  const [runner] = useState(() => new SerialRunner((qid) => saveOnceRef.current(qid)));
+  const save = useCallback((qid: string) => runner.run(qid), [runner]);
 
   /** ファイル提出: 署名付き POST を受け取り S3 へ直接送ってから、回答として登録する */
   const uploadFile = async (qid: string, file: File) => {
@@ -247,21 +259,22 @@ function AnswerForm(props: {
           version: fieldsRef.current[qid]?.version ?? cur.version,
         }),
       });
-      const next = { content: res.content, version: res.version, savedAt: res.updatedAt };
-      fieldsRef.current = {
-        ...fieldsRef.current,
-        [qid]: { ...(fieldsRef.current[qid] as FieldState), ...next },
-      };
-      patch(qid, { ...next, saving: false, dirty: false });
+      patchNow(qid, {
+        content: res.content,
+        version: res.version,
+        savedAt: res.updatedAt,
+        saving: false,
+        dirty: false,
+      });
     } catch (e) {
       const update = { uploading: undefined, saving: false };
       if (e instanceof ApiError && e.code === "VERSION_CONFLICT") {
-        patch(qid, { ...update, conflict: true, error: e.message });
+        patchNow(qid, { ...update, conflict: true, error: e.message });
       } else if (e instanceof ApiError && e.code === "INVALID_STATE") {
-        patch(qid, update);
+        patchNow(qid, update);
         await onStateChanged(e.message);
       } else {
-        patch(qid, { ...update, error: e instanceof UploadError ? e.message : messageOf(e) });
+        patchNow(qid, { ...update, error: e instanceof UploadError ? e.message : messageOf(e) });
       }
     }
   };
@@ -334,6 +347,8 @@ function AnswerForm(props: {
     setSubmitError(undefined);
     try {
       await saveAll();
+      // ファイルのアップロード・登録が通信中なら、終わるまで待つ
+      await Promise.allSettled(uploads.current.values());
       const blocked = Object.values(fieldsRef.current).some(
         (f) => f.dirty || f.error || f.conflict || f.uploading !== undefined,
       );
@@ -367,9 +382,18 @@ function AnswerForm(props: {
             index={i}
             question={q}
             field={field}
-            readOnly={readOnly}
+            // 提出の処理中は入力させない（保存の完了待ちが終わらなくなるのを防ぐ）
+            readOnly={readOnly || submitting}
             onChange={(content) => onChange(q.qid, content)}
-            onUpload={(file) => void uploadFile(q.qid, file)}
+            onUpload={(file) => {
+              const p = uploadFile(q.qid, file);
+              uploads.current.set(q.qid, p);
+              void p
+                .catch(() => undefined)
+                .finally(() => {
+                  if (uploads.current.get(q.qid) === p) uploads.current.delete(q.qid);
+                });
+            }}
             onReload={() => void props.onReload()}
           />
         );

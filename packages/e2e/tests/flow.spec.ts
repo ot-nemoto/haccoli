@@ -47,13 +47,8 @@ test.describe
         mimeType: "application/zip",
         buffer: tinyZip("README.md", "# E2E\n"),
       });
-      await expect(page.locator("#q-q4")).toContainText("answer.zip");
-
+      // 保存・アップロードの完了を待たずに提出する（通信中の提出は、完了を待ってから判定される。#19）
       await page.getByRole("button", { name: "すべて保存" }).click();
-      // 保存の通信中に提出すると未保存と判定される不具合（#19）を避けるため、保存の完了を待つ。
-      // #19 の修正後にこの待ち合わせを外す
-      await expect(page.getByRole("button", { name: "すべて保存" })).toBeDisabled();
-      await expect(page.getByText(/保存中…|未保存/)).toHaveCount(0);
       await page.getByRole("button", { name: "提出する" }).click();
       await page
         .getByRole("dialog", { name: "提出の確認" })
@@ -73,6 +68,7 @@ test.describe
       await expect(page).toHaveURL(new RegExp(`/grader/${f.attemptId}$`));
       // 提出した回答が表示される
       await expect(page.getByText("E2E テストの回答です。")).toBeVisible();
+      await expect(page.getByText("answer.zip")).toBeVisible();
 
       const scores = page.getByRole("spinbutton");
       await expect(scores).toHaveCount(4);
