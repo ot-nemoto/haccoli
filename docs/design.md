@@ -353,7 +353,7 @@ stateDiagram-v2
 | `exam:list`                                          | 課題と版の一覧                                              |
 | `attempt:issue --email --exam --deadline YYYY-MM-DD` | 受験発行（最新版で発行、期限＝指定日 23:59 JST）            |
 | `attempt:extend --attempt --deadline YYYY-MM-DD`     | 期限延長（`EXPIRED` からの復帰を含む）                      |
-| `attempt:cancel --attempt`                           | 取消                                                        |
+| `attempt:cancel --attempt`                           | 取消（未着手・受験中のみ。期限切れ・提出済み以降は不可）    |
 | `attempt:assign --attempt --grader <email>...`       | 採点者割り当て（複数指定可。`EXPIRED` / `CANCELED` は不可） |
 | `attempt:list [--status]`                            | 受験一覧（進捗・期限・採点状況）                            |
 | `result:export --exam [--out results.csv]`           | 採点結果の CSV 出力（採点者別の問題ごとの点数・コメント）   |

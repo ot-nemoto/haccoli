@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import {
+  cancelAttempt,
   effectiveStatus,
   extendAttempt,
   issueAttempt,
@@ -107,6 +108,23 @@ export function addExamCommands(program: Command, globals: Globals) {
       console.log(`期限を変更しました: ${after.attemptId}（${after.candidateName}）`);
       console.log(`  期限:       ${jst(before.deadlineAt)} → ${jst(after.deadlineAt)}`);
       console.log(`  ステータス: ${before.status} → ${after.status}`);
+    });
+
+  program
+    .command("attempt:cancel")
+    .description("受験を取り消す（未着手・受験中のみ。保存済みの回答は残す）")
+    .requiredOption("--attempt <attemptId>", "受験 ID")
+    .action(async (opts: { attempt: string }) => {
+      const ctx = await createContext(globals().env);
+      await confirmIfProd(
+        ctx,
+        `受験 ${opts.attempt} を取り消します。候補者は回答・提出できなくなり、元に戻せません。`,
+        globals().yes,
+      );
+      const { before, after } = await cancelAttempt(ctx.deps, { attemptId: opts.attempt });
+      console.log(`取り消しました: ${after.attemptId}（${after.candidateName}）`);
+      console.log(`  ステータス: ${before.status} → ${after.status}`);
+      if (after.canceledAt) console.log(`  取消日時:   ${jst(after.canceledAt)}`);
     });
 
   program

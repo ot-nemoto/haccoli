@@ -43,6 +43,7 @@ export interface AttemptRecord {
   deadlineAt: string;
   startedAt?: string;
   submittedAt?: string;
+  canceledAt?: string;
 }
 
 export interface AnswerRecord {
@@ -580,6 +581,7 @@ function toAttempt(item: Record<string, unknown>): AttemptRecord {
     deadlineAt: String(item.deadlineAt),
     ...(item.startedAt ? { startedAt: String(item.startedAt) } : {}),
     ...(item.submittedAt ? { submittedAt: String(item.submittedAt) } : {}),
+    ...(item.canceledAt ? { canceledAt: String(item.canceledAt) } : {}),
   };
 }
 
@@ -703,6 +705,49 @@ export async function extendAttempt(
           ":cur": before.status,
           ":deadline": deadlineAt,
           ":gsi2pk": keys.attemptsByStatus(next, "").GSI2PK,
+        },
+        ReturnValues: "ALL_NEW",
+      }),
+    );
+    return { before, after: toAttempt(res.Attributes ?? {}) };
+  } catch (e) {
+    if (isConditionFailure(e)) {
+      throw new StateError("INVALID", "受験の状態が変わりました。もう一度実行してください");
+    }
+    throw e;
+  }
+}
+
+/**
+ * 受験を取り消す（docs/design.md §6.3 attempt:cancel）。未着手・受験中のみ。
+ * 期限切れ（バッチ処理前を含む）・提出済み以降・取消済みは不可。保存済みの回答は削除しない。
+ */
+export async function cancelAttempt(
+  deps: DataDeps,
+  input: { attemptId: string },
+): Promise<{ before: AttemptRecord; after: AttemptRecord }> {
+  const now = nowOf(deps);
+  const before = await getAttemptMeta(deps, input.attemptId);
+  if (!before) throw attemptNotFound();
+  const status = effectiveStatus(before, now);
+  if (status !== "NOT_STARTED" && status !== "IN_PROGRESS") {
+    throw new StateError("INVALID", `この受験は取り消せません（${status}）`);
+  }
+  try {
+    const res = await deps.ddb.send(
+      new UpdateCommand({
+        TableName: deps.tableName,
+        Key: keys.attemptMeta(input.attemptId),
+        UpdateExpression: "SET #s = :canceled, canceledAt = :now, GSI2PK = :gsi2pk",
+        // 読み取り後に開始・提出・期限処理された場合や、期限を迎えた場合は失敗させる
+        ConditionExpression: "#s = :cur AND deadlineAt > :now",
+        ExpressionAttributeNames: { "#s": "status" },
+        ExpressionAttributeValues: {
+          ":canceled": "CANCELED",
+          ":cur": before.status,
+          // 判定から書き込みまでに期限を迎えた場合も取り消さないよう、書き込み直前の時刻を使う
+          ":now": nowOf(deps).toISOString(),
+          ":gsi2pk": keys.attemptsByStatus("CANCELED", "").GSI2PK,
         },
         ReturnValues: "ALL_NEW",
       }),
