@@ -101,7 +101,7 @@ function addUserCommands(role: Role, label: string) {
     .action(async (opts: { email: string }) => {
       const ctx = await createContext(globals().env);
       await confirmIfProd(ctx, `${opts.email} を無効化します。`, globals().yes);
-      const user = await disableUser(ctx.deps, opts.email);
+      const user = await disableUser(ctx.deps, { email: opts.email });
       console.log(`無効化しました: ${user.name} <${user.email}>`);
     });
 

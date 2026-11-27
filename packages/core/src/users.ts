@@ -14,12 +14,15 @@ import {
   PutCommand,
   QueryCommand,
   ScanCommand,
+  TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { type AuditDeps, withAudit } from "./audit.js";
+import { isConditionFailure, transactionFailureCodes } from "./ddb-errors.js";
 import { normalizeEmail } from "./email.js";
-import { StateError, ValidationError } from "./errors.js";
+import { DomainError, NotFoundError, StateError, ValidationError } from "./errors.js";
 import { GSI1, keys } from "./keys.js";
+import { type Page, readPage } from "./paging.js";
 import { isRole, type Role, rolesProblem, sortRoles } from "./roles.js";
 
 export interface UserDeps {
@@ -43,16 +46,33 @@ export interface UserProfile {
   createdAt: string;
 }
 
-export class UserAlreadyExistsError extends Error {
+export class UserAlreadyExistsError extends DomainError {
   constructor(email: string) {
     super(`既に登録済みのメールアドレスです: ${email}`);
   }
 }
 
-export class UserNotFoundError extends Error {
-  constructor(email: string) {
-    super(`登録されていないメールアドレスです: ${email}`);
+export class UserNotFoundError extends NotFoundError {
+  constructor(ref: UserRef) {
+    super(
+      "email" in ref
+        ? `登録されていないメールアドレスです: ${ref.email}`
+        : `利用者が見つかりません: ${ref.sub}`,
+    );
   }
+}
+
+/** 変更する利用者の指定。CLI はメールアドレス、管理者 API は sub で指定する */
+export type UserRef = { email: string } | { sub: string };
+
+async function resolveUser(
+  deps: Pick<UserDeps, "ddb" | "tableName">,
+  ref: UserRef,
+): Promise<UserProfile> {
+  const user =
+    "email" in ref ? await findUserByEmail(deps, ref.email) : await getUserBySub(deps, ref.sub);
+  if (!user) throw new UserNotFoundError(ref);
+  return user;
 }
 
 /**
@@ -68,7 +88,7 @@ export async function registerUser(
 ): Promise<UserProfile> {
   const email = normalizeEmail(input.email);
   const name = input.name.trim();
-  if (!name) throw new Error("氏名は必須です");
+  if (!name) throw new ValidationError("氏名は必須です");
   const problem = rolesProblem(input.roles);
   if (problem) throw new ValidationError(problem);
   const roles = sortRoles(input.roles);
@@ -191,15 +211,42 @@ export async function findUserByEmail(
   return item ? toProfile(item) : undefined;
 }
 
+/** 利用者の一覧（すべて、登録順）。CLI と、最後の管理者の確認で使う */
 export async function listUsers(
   deps: Pick<UserDeps, "ddb" | "tableName">,
   role?: Role,
 ): Promise<UserProfile[]> {
   // MVP の件数（数百）なら Scan で十分。件数が増えたらロール別 GSI を追加する
+  const fetch = userScan(deps, role);
   const users: UserProfile[] = [];
   let startKey: Record<string, unknown> | undefined;
   do {
-    const res = await deps.ddb.send(
+    const res = await fetch(startKey);
+    users.push(...(res.Items ?? []).map(toProfile));
+    startKey = res.LastEvaluatedKey;
+  } while (startKey);
+  return users.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * 利用者の一覧（ページごと）。管理者 API で使う。
+ * Scan の順（登録順ではない）で返す。ページをまたいで並べ替えられないため
+ */
+export async function listUserPage(
+  deps: Pick<UserDeps, "ddb" | "tableName">,
+  opts: { role?: Role; limit?: number; cursor?: string },
+): Promise<Page<UserProfile>> {
+  const page = await readPage(userScan(deps, opts.role), {
+    limit: opts.limit,
+    cursor: opts.cursor,
+    isValidKey: (key) => key.PK.startsWith("USER#") && key.SK === "PROFILE",
+  });
+  return { ...page, items: page.items.map(toProfile) };
+}
+
+function userScan(deps: Pick<UserDeps, "ddb" | "tableName">, role: Role | undefined) {
+  return (startKey: Record<string, unknown> | undefined) =>
+    deps.ddb.send(
       new ScanCommand({
         TableName: deps.tableName,
         // 移行前（role のみ）のアイテムも拾う（§14.2）
@@ -211,15 +258,19 @@ export async function listUsers(
         ExclusiveStartKey: startKey,
       }),
     );
-    users.push(...(res.Items ?? []).map(toProfile));
-    startKey = res.LastEvaluatedKey;
-  } while (startKey);
-  return users.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-export async function disableUser(deps: AuditedUserDeps, rawEmail: string): Promise<UserProfile> {
-  const user = await findUserByEmail(deps, rawEmail);
-  if (!user) throw new UserNotFoundError(rawEmail);
+/**
+ * 無効化する。DynamoDB → Cognito の順に行う（§14.3）。API は毎回 DynamoDB を照合するため、
+ * DynamoDB を変えた時点で即時に無効になる。Cognito で失敗しても再実行でそろう。
+ * 管理者（画面）による操作では、自分自身・最後の有効な管理者を無効化させない（§14.1）。
+ */
+export async function disableUser(deps: AuditedUserDeps, ref: UserRef): Promise<UserProfile> {
+  const user = await resolveUser(deps, ref);
+  const guard =
+    deps.actor.type === "admin"
+      ? await adminRemovalGuard(deps, user, deps.actor.sub, "disable")
+      : undefined;
   return withAudit(
     deps,
     {
@@ -228,16 +279,23 @@ export async function disableUser(deps: AuditedUserDeps, rawEmail: string): Prom
       detail: { roles: user.roles },
     },
     async () => {
+      try {
+        await guardedUpdate(
+          deps,
+          {
+            Key: keys.user(user.sub),
+            UpdateExpression: "SET disabled = :true",
+            ConditionExpression: "attribute_exists(PK)",
+            ExpressionAttributeValues: { ":true": true },
+          },
+          guard,
+        );
+      } catch (e) {
+        if (isConditionFailure(e)) throw new UserNotFoundError({ sub: user.sub });
+        throw e;
+      }
       await deps.cognito.send(
         new AdminDisableUserCommand({ UserPoolId: deps.userPoolId, Username: user.email }),
-      );
-      await deps.ddb.send(
-        new UpdateCommand({
-          TableName: deps.tableName,
-          Key: keys.user(user.sub),
-          UpdateExpression: "SET disabled = :true",
-          ExpressionAttributeValues: { ":true": true },
-        }),
       );
       return { ...user, disabled: true };
     },
@@ -273,10 +331,9 @@ function unusablePassword(): string {
  */
 export async function addRole(
   deps: AuditedUserDeps,
-  input: { email: string; role: Role },
+  input: UserRef & { role: Role },
 ): Promise<UserProfile> {
-  const user = await findUserByEmail(deps, input.email);
-  if (!user) throw new UserNotFoundError(input.email);
+  const user = await resolveUser(deps, input);
   if (user.disabled) throw new ValidationError(`無効化された利用者です: ${user.email}`);
   const problem = rolesProblem(sortRoles([...user.roles, input.role]));
   if (problem && !user.roles.includes(input.role)) throw new ValidationError(problem);
@@ -319,16 +376,16 @@ async function grantRole(deps: UserDeps, user: UserProfile, role: Role): Promise
  */
 export async function removeRole(
   deps: AuditedUserDeps,
-  input: { email: string; role: Role },
+  input: UserRef & { role: Role },
 ): Promise<UserProfile> {
-  const user = await findUserByEmail(deps, input.email);
-  if (!user) throw new UserNotFoundError(input.email);
+  const user = await resolveUser(deps, input);
   const held = user.roles.includes(input.role);
   if (held && user.roles.length === 1) throw lastRole();
   // 管理者（画面）による操作では、自分自身・最後の管理者の admin を外させない（§14.1）
-  if (held && input.role === "admin" && deps.actor.type === "admin") {
-    await assertAdminRemovable(deps, user, deps.actor.sub);
-  }
+  const guard =
+    held && input.role === "admin" && deps.actor.type === "admin"
+      ? await adminRemovalGuard(deps, user, deps.actor.sub, "role")
+      : undefined;
 
   return withAudit(
     deps,
@@ -342,16 +399,56 @@ export async function removeRole(
         await groupCommand(deps, "remove", user.email, input.role);
         return user;
       }
-      const roles = await updateRoles(deps, user.sub, (cur) => {
-        const next = cur.filter((r) => r !== input.role);
-        if (next.length === 0) throw lastRole();
-        return next;
-      });
+      const roles = await updateRoles(
+        deps,
+        user.sub,
+        (cur) => {
+          const next = cur.filter((r) => r !== input.role);
+          if (next.length === 0) throw lastRole();
+          return next;
+        },
+        guard,
+      );
       await groupCommand(deps, "remove", user.email, input.role);
       return { ...user, roles };
     },
     (after) => ({ detail: { rolesAfter: after.roles, changed: changedRoles(user, after) } }),
   );
+}
+
+/**
+ * 採点者・管理者のロールを、指定した組み合わせにする（管理者 API の PUT /admin/users/{sub}/roles）。
+ * 付与を先に、削除を後に行う（例: grader → admin でも、最後のロールを外す途中の状態にならない）。
+ * 付与・削除はそれぞれ監査ログに記録する。
+ *
+ * 管理者（画面）が admin を外す場合は、付与の前に自分自身・最後の管理者のチェックを済ませる。
+ * 削除で拒否されるのに付与だけが残る、ということを避けるため（削除の時点の確認は removeRole が
+ * トランザクションで行う）。
+ */
+export async function setStaffRoles(
+  deps: AuditedUserDeps,
+  input: { sub: string; roles: Exclude<Role, "candidate">[] },
+): Promise<UserProfile> {
+  const user = await resolveUser(deps, { sub: input.sub });
+  if (user.roles.includes("candidate")) {
+    throw new ValidationError("候補者のロールは変更できません");
+  }
+  const wanted = sortRoles(input.roles);
+  const problem = rolesProblem(wanted);
+  if (problem) throw new ValidationError(problem);
+  const adds = wanted.filter((r) => !user.roles.includes(r));
+  const removes = user.roles.filter((r) => !wanted.includes(r));
+  if (adds.length > 0 && user.disabled) {
+    throw new ValidationError(`無効化された利用者です: ${user.email}`);
+  }
+  if (removes.includes("admin") && deps.actor.type === "admin") {
+    await adminRemovalGuard(deps, user, deps.actor.sub, "role");
+  }
+
+  let current = user;
+  for (const role of adds) current = await addRole(deps, { sub: user.sub, role });
+  for (const role of removes) current = await removeRole(deps, { sub: user.sub, role });
+  return current;
 }
 
 /**
@@ -379,24 +476,109 @@ async function groupCommand(
 }
 
 /**
- * 管理者（画面）による admin の削除・無効化の保護（§14.1）。
- * 自分自身は不可。有効な管理者が最後の 1 人なら不可（スーパー管理者は CLI で常に操作できる）。
- * 数えてから更新するまでの間の同時実行は防げない。画面の API で使う前に（Step 7-3）、
- * 確認と更新を 1 つのトランザクションにする。
+ * 管理者（画面）による admin の削除・無効化の保護（§14.1）。スーパー管理者（CLI）には効かせない。
+ * - 自分自身は不可（自分の admin を外す・自分を無効化する）
+ * - 対象が有効な管理者なら、ほかに有効な管理者がいなければ不可
+ *
+ * ほかの有効な管理者（の sub）を返す。更新するときは、そのうち 1 人がまだ有効な管理者であることを
+ * 同じトランザクションで確かめる（guardedUpdate）。数えてから更新するまでの間に、
+ * 管理者同士で互いに外し合っても 0 人にならない。保護が要らなければ undefined。
  */
-export async function assertAdminRemovable(
+async function adminRemovalGuard(
   deps: Pick<UserDeps, "ddb" | "tableName">,
   target: UserProfile,
   actorSub: string,
-): Promise<void> {
+  op: "role" | "disable",
+): Promise<string[] | undefined> {
   if (target.sub === actorSub) {
-    throw new ValidationError("自分自身の管理者の権限は外せません");
+    throw new ValidationError(
+      op === "role" ? "自分自身の管理者の権限は外せません" : "自分自身は無効化できません",
+    );
   }
-  if (!target.roles.includes("admin") || target.disabled) return;
-  const admins = (await listUsers(deps, "admin")).filter((u) => !u.disabled);
-  if (admins.every((u) => u.sub === target.sub)) {
-    throw new StateError("INVALID", "最後の管理者の権限は外せません");
+  if (!target.roles.includes("admin") || target.disabled) return undefined;
+  const others = (await listUsers(deps, "admin"))
+    .filter((u) => !u.disabled && u.sub !== target.sub)
+    .map((u) => u.sub);
+  if (others.length === 0) throw lastAdmin();
+  return others;
+}
+
+const lastAdmin = () =>
+  new StateError(
+    "INVALID",
+    "有効な管理者が最後の 1 人のため、管理者の権限を外す・無効化することはできません",
+  );
+
+/**
+ * 有効な管理者であることの条件（最後の管理者の保護で、ほかの管理者に使う）。
+ * 一覧（listUsers）と同じく、移行前のアイテム（role のみ）も管理者として認める
+ */
+const ACTIVE_ADMIN = {
+  ConditionExpression:
+    "(contains(#rs, :admin) OR #r = :admin) AND (attribute_not_exists(#d) OR #d = :false)",
+  ExpressionAttributeNames: { "#rs": "roles", "#r": "role", "#d": "disabled" },
+  ExpressionAttributeValues: { ":admin": "admin", ":false": false },
+};
+
+interface ProfileUpdate {
+  Key: { PK: string; SK: string };
+  UpdateExpression: string;
+  ConditionExpression: string;
+  ExpressionAttributeNames?: Record<string, string>;
+  ExpressionAttributeValues?: Record<string, unknown>;
+}
+
+/**
+ * 利用者のプロフィールを更新する。guard（ほかの有効な管理者の sub）があれば、
+ * そのうち 1 人がまだ有効な管理者であることを同じトランザクションで確かめる。
+ * 確かめた管理者が先に外されていたら、次の管理者で試す。全員が外されていれば最後の管理者として拒否する。
+ *
+ * 互いに外し合う 2 つの操作は、どちらも相手のアイテムを確かめ・自分の対象を更新するため、
+ * 同じ 2 件のアイテムに触れる。DynamoDB のトランザクションは直列化されるので、片方は必ず失敗する。
+ *
+ * @throws 対象の条件（ConditionExpression）を満たさないときは ConditionalCheckFailedException
+ */
+async function guardedUpdate(
+  deps: Pick<UserDeps, "ddb" | "tableName">,
+  update: ProfileUpdate,
+  guard: string[] | undefined,
+): Promise<void> {
+  if (!guard) {
+    await deps.ddb.send(new UpdateCommand({ TableName: deps.tableName, ...update }));
+    return;
   }
+  for (const other of guard) {
+    try {
+      await deps.ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            { Update: { TableName: deps.tableName, ...update } },
+            {
+              ConditionCheck: { TableName: deps.tableName, Key: keys.user(other), ...ACTIVE_ADMIN },
+            },
+          ],
+        }),
+      );
+      return;
+    } catch (e) {
+      const codes = transactionFailureCodes(e);
+      if (!codes) throw e;
+      if (codes[0] === "ConditionalCheckFailed") {
+        throw Object.assign(new Error("対象の利用者が変わりました"), {
+          name: "ConditionalCheckFailedException",
+        });
+      }
+      // 確かめた管理者が、外された・無効化された。次の管理者で試す
+      if (codes[1] === "ConditionalCheckFailed") continue;
+      // 同時に実行された操作と重なった
+      if (codes.includes("TransactionConflict")) {
+        throw new StateError("INVALID", "他の操作と重なりました。もう一度実行してください");
+      }
+      // スロットリングなど想定外の理由は隠さない（API では 500 にし、アラームで気づけるようにする）
+      throw e;
+    }
+  }
+  throw lastAdmin();
 }
 
 /**
@@ -407,6 +589,7 @@ async function updateRoles(
   deps: UserDeps,
   sub: string,
   change: (current: Role[]) => Role[],
+  guard?: string[],
 ): Promise<Role[]> {
   const res = await deps.ddb.send(
     new GetCommand({ TableName: deps.tableName, Key: keys.user(sub), ConsistentRead: true }),
@@ -423,18 +606,19 @@ async function updateRoles(
       ? { expr: "attribute_not_exists(#rs) AND #r = :prev", values: { ":prev": res.Item.role } }
       : { expr: "attribute_not_exists(#rs) AND attribute_not_exists(#r)", values: {} };
   try {
-    await deps.ddb.send(
-      new UpdateCommand({
-        TableName: deps.tableName,
+    await guardedUpdate(
+      deps,
+      {
         Key: keys.user(sub),
         UpdateExpression: "SET #rs = :next REMOVE #r",
         ConditionExpression: condition.expr,
         ExpressionAttributeNames: { "#rs": "roles", "#r": "role" },
         ExpressionAttributeValues: { ":next": next, ...condition.values },
-      }),
+      },
+      guard,
     );
   } catch (e) {
-    if (e instanceof Error && e.name === "ConditionalCheckFailedException") {
+    if (isConditionFailure(e)) {
       throw new StateError("INVALID", "ロールが他の操作で変わりました。もう一度実行してください");
     }
     throw e;

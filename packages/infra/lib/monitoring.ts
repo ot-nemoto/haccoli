@@ -17,6 +17,8 @@ export interface MonitoringProps {
   alarmEmail: string;
   httpApi: apigw.HttpApi;
   apiFunction: lambda.IFunction;
+  /** 管理者 API の Lambda（docs/design.md §14.3） */
+  adminFunction: lambda.IFunction;
 }
 
 /**
@@ -75,6 +77,15 @@ export class Monitoring extends Construct {
         alarmName: `haccoli-${props.envName}-api-lambda-errors`,
         alarmDescription: "API の Lambda でエラー（例外・タイムアウト）が発生しました",
         metric: props.apiFunction.metricErrors({ period: Duration.minutes(5), statistic: "Sum" }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }),
+      new cloudwatch.Alarm(this, "AdminLambdaErrors", {
+        alarmName: `haccoli-${props.envName}-admin-lambda-errors`,
+        alarmDescription: "管理者 API の Lambda でエラー（例外・タイムアウト）が発生しました",
+        metric: props.adminFunction.metricErrors({ period: Duration.minutes(5), statistic: "Sum" }),
         threshold: 1,
         evaluationPeriods: 1,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,

@@ -5,8 +5,18 @@ import {
   QueryCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import type {
+  Actor,
+  AuditAction,
+  AuditDetail,
+  AuditEntry,
+  AuditRecord,
+  AuditStatus,
+  AuditTarget,
+} from "@haccoli/shared";
 import { jstDate } from "./deadline.js";
 import { ValidationError } from "./errors.js";
+import { type Page, readPage } from "./paging.js";
 
 /**
  * 監査ログ（docs/design.md §14.4）。管理者（画面）とスーパー管理者（CLI）の変更操作を、
@@ -18,12 +28,17 @@ import { ValidationError } from "./errors.js";
  * 回答・採点の本文や候補者のメールアドレス・氏名は含めない。個人データの削除後も残るため。
  */
 
-/** 操作した人 */
-export type Actor =
-  /** 管理者（Cognito の admin グループ。管理画面から操作） */
-  | { type: "admin"; sub: string; name: string }
-  /** スーパー管理者（IAM。CLI から操作）。sts:GetCallerIdentity の ARN */
-  | { type: "iam"; arn: string };
+export {
+  type Actor,
+  AUDIT_ACTIONS,
+  type AuditAction,
+  type AuditDetail,
+  type AuditEntry,
+  type AuditRecord,
+  type AuditStatus,
+  type AuditTarget,
+  isAuditAction,
+} from "@haccoli/shared";
 
 export interface AuditDeps {
   ddb: DynamoDBDocumentClient;
@@ -31,52 +46,6 @@ export interface AuditDeps {
   /** 記録する実行者。変更操作では必須にし、API・CLI のどちらから呼んでも記録が漏れないようにする */
   actor: Actor;
   now?: () => Date;
-}
-
-export const AUDIT_ACTIONS = [
-  "user.add",
-  "user.roles",
-  "user.disable",
-  "user.purge",
-  "user.migrate-roles",
-  "exam.publish",
-  "attempt.issue",
-  "attempt.extend",
-  "attempt.cancel",
-  "attempt.assign",
-  "result.export",
-] as const;
-export type AuditAction = (typeof AUDIT_ACTIONS)[number];
-
-export interface AuditTarget {
-  type: "user" | "attempt" | "exam";
-  /** 利用者は sub、受験は attemptId、課題は examId（メールアドレスは使わない） */
-  id: string;
-}
-
-/** STARTED のまま残ったものは、結果が記録されていない（結果不明）。対象の状態を確かめる */
-export type AuditStatus = "STARTED" | "SUCCEEDED" | "FAILED";
-
-/** 変更の要点。個人を特定できる値（メールアドレス・氏名）や回答・採点の本文は入れない */
-export type AuditDetail = Record<string, string | number | boolean | string[] | undefined>;
-
-export interface AuditEntry {
-  action: AuditAction;
-  target?: AuditTarget;
-  detail?: AuditDetail;
-}
-
-export interface AuditRecord extends AuditEntry {
-  /** SK（`<timestamp>#<uuid>`） */
-  id: string;
-  /** JST の年月（yyyymm） */
-  month: string;
-  at: string;
-  actor: Actor;
-  status: AuditStatus;
-  finishedAt?: string;
-  /** FAILED の理由（メールアドレスは伏せる） */
-  error?: string;
 }
 
 const nowOf = (deps: Pick<AuditDeps, "now">) => deps.now?.() ?? new Date();
@@ -221,18 +190,47 @@ function compact(detail: AuditDetail): AuditDetail {
   return Object.fromEntries(Object.entries(detail).filter(([, v]) => v !== undefined));
 }
 
-/** 監査ログの一覧（新しい順）。month は yyyymm */
+export interface AuditFilter {
+  /** JST の年月（yyyymm） */
+  month: string;
+  action?: AuditAction;
+}
+
+/** 監査ログの一覧（新しい順、すべて）。CLI で使う */
 export async function listAuditLogs(
   deps: Pick<AuditDeps, "ddb" | "auditTableName">,
-  filter: { month: string; action?: AuditAction },
+  filter: AuditFilter,
 ): Promise<AuditRecord[]> {
-  if (!/^\d{6}$/.test(filter.month)) {
-    throw new ValidationError(`月は yyyymm の形式で指定してください: ${filter.month}`);
-  }
+  const fetch = auditQuery(deps, filter);
   const records: AuditRecord[] = [];
   let startKey: Record<string, unknown> | undefined;
   do {
-    const res = await deps.ddb.send(
+    const res = await fetch(startKey);
+    records.push(...(res.Items ?? []).map(toRecord));
+    startKey = res.LastEvaluatedKey;
+  } while (startKey);
+  return records;
+}
+
+/** 監査ログの一覧（新しい順、ページごと）。管理者 API で使う */
+export async function listAuditLogPage(
+  deps: Pick<AuditDeps, "ddb" | "auditTableName">,
+  filter: AuditFilter & { limit?: number; cursor?: string },
+): Promise<Page<AuditRecord>> {
+  const page = await readPage(auditQuery(deps, filter), {
+    limit: filter.limit,
+    cursor: filter.cursor,
+    isValidKey: (key) => key.PK === `AUDIT#${filter.month}`,
+  });
+  return { ...page, items: page.items.map(toRecord) };
+}
+
+function auditQuery(deps: Pick<AuditDeps, "ddb" | "auditTableName">, filter: AuditFilter) {
+  if (!/^\d{6}$/.test(filter.month)) {
+    throw new ValidationError(`月は yyyymm の形式で指定してください: ${filter.month}`);
+  }
+  return (startKey: Record<string, unknown> | undefined) =>
+    deps.ddb.send(
       new QueryCommand({
         TableName: deps.auditTableName,
         KeyConditionExpression: "PK = :pk",
@@ -250,10 +248,6 @@ export async function listAuditLogs(
         ExclusiveStartKey: startKey,
       }),
     );
-    records.push(...(res.Items ?? []).map(toRecord));
-    startKey = res.LastEvaluatedKey;
-  } while (startKey);
-  return records;
 }
 
 function toRecord(item: Record<string, unknown>): AuditRecord {

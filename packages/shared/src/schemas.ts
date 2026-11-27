@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { ROLES } from "./roles.js";
 
 /**
  * zod スキーマ（サーバー側の検証用）。画面のバンドルに zod を含めないよう、
@@ -155,3 +156,21 @@ export const finalizeGradeRequestSchema = z
   .strict();
 
 export type GradeItem = z.infer<typeof gradeItemSchema>;
+
+/** 管理者 API（docs/design.md §14.6） */
+export const adminCreateUserRequestSchema = z
+  .object({
+    email: z.string().trim().min(3).max(254),
+    name: z.string().trim().min(1).max(100),
+    roles: z.array(z.enum(ROLES)).min(1).max(ROLES.length),
+  })
+  .strict();
+
+export const adminSetRolesRequestSchema = z
+  .object({
+    roles: z
+      .array(z.enum(["grader", "admin"]))
+      .min(1)
+      .max(2),
+  })
+  .strict();

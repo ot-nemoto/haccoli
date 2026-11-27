@@ -34,11 +34,12 @@ beforeAll(() => {
 }, 120_000);
 
 describe("監視（prod）", () => {
-  it("アラームは API 5xx・Lambda エラー・SES バウンス率・苦情率の 4 つ", () => {
+  it("アラームは API 5xx・Lambda エラー（API・管理者 API）・SES バウンス率・苦情率の 5 つ", () => {
     const names = Object.values(prod.findResources("AWS::CloudWatch::Alarm"))
       .map((a) => a.Properties.AlarmName)
       .sort();
     expect(names).toEqual([
+      "haccoli-prod-admin-lambda-errors",
       "haccoli-prod-api-5xx",
       "haccoli-prod-api-lambda-errors",
       "haccoli-prod-ses-bounce-rate",
