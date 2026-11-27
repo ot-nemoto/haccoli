@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
 import {
   AdminSetUserPasswordCommand,
+  AdminUserGlobalSignOutCommand,
   InitiateAuthCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
 import { type Context, createContext } from "@haccoli/admin-cli/context";
@@ -69,7 +70,8 @@ export async function prepare(ctx: Context, candidateEmail: string): Promise<Fix
 
   const candidate = await registerUser(ctx.deps, {
     email: candidateEmail,
-    name: "E2E 候補者",
+    // 採点者は使い回すため、担当一覧で前回の実行と区別できる名前にする
+    name: `E2E 候補者 ${candidateEmail.split("@")[0]?.replace("e2e-cand-", "")}`,
     role: "candidate",
   });
   const grader =
@@ -123,10 +125,17 @@ export async function tearDown(ctx: Context, candidateEmail: string): Promise<vo
       errors.push(e);
     }
   }
-  // 採点者は残すので、テストで使ったパスワードを使えなくする
+  // 採点者は残すので、テストで使ったパスワードを使えなくし、リフレッシュトークンも失効させる
+  // （アクセストークンは有効期限の 60 分まで使える。API Gateway の JWT 検証は失効を見ないため）
   if (grader) {
     try {
       await setPassword(ctx, grader.email, unusablePassword());
+      await ctx.deps.cognito.send(
+        new AdminUserGlobalSignOutCommand({
+          UserPoolId: ctx.deps.userPoolId,
+          Username: grader.email,
+        }),
+      );
     } catch (e) {
       errors.push(e);
     }
@@ -171,6 +180,13 @@ async function settleAttempts(ctx: Context, candidateSub: string): Promise<void>
           version: saved.version,
         });
       }
+    }
+  }
+  // 削除できない状態のまま残っていれば、原因の受験がわかるように止める
+  for (const attempt of await listAttemptsByCandidate(ctx.deps, candidateSub)) {
+    const status = effectiveStatus(attempt, new Date());
+    if (!["GRADED", "CANCELED", "EXPIRED"].includes(status)) {
+      throw new Error(`受験 ${attempt.attemptId} を削除できる状態にできませんでした（${status}）`);
     }
   }
 }

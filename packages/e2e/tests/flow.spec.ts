@@ -32,7 +32,8 @@ test.describe
     });
 
     test("候補者が回答して提出する", async ({ browser }) => {
-      const page = await open(browser, f, f.candidate, "/exam");
+      await using session = await open(browser, f, f.candidate, "/exam");
+      const { page } = session;
       // 課題が 1 件だけなら、課題の画面に自動で移る
       await expect(page).toHaveURL(new RegExp(`/exam/${f.attemptId}$`));
       await page.getByRole("button", { name: "開始する" }).click();
@@ -65,8 +66,10 @@ test.describe
 
     test("採点者が採点して確定する", async ({ browser }) => {
       await assignGrader(f);
-      const page = await open(browser, f, f.grader, "/grader");
-      await page.getByRole("link", { name: f.candidate.user.name }).click();
+      await using session = await open(browser, f, f.grader, "/grader");
+      const { page } = session;
+      // 採点者は使い回すため、この実行の受験をリンク先で特定する
+      await page.locator(`a[href="/grader/${f.attemptId}"]`).click();
       await expect(page).toHaveURL(new RegExp(`/grader/${f.attemptId}$`));
       // 提出した回答が表示される
       await expect(page.getByText("E2E テストの回答です。")).toBeVisible();
@@ -88,7 +91,12 @@ test.describe
   });
 
 /** トークンを sessionStorage に入れた状態で画面を開く（OTP のログインを経ない） */
-async function open(browser: Browser, f: Fixture, actor: Actor, path: string): Promise<Page> {
+async function open(
+  browser: Browser,
+  f: Fixture,
+  actor: Actor,
+  path: string,
+): Promise<{ page: Page; [Symbol.asyncDispose]: () => Promise<void> }> {
   const context = await browser.newContext({ baseURL: f.webUrl });
   await context.addInitScript(
     ([key, value]) => {
@@ -98,5 +106,6 @@ async function open(browser: Browser, f: Fixture, actor: Actor, path: string): P
   );
   const page = await context.newPage();
   await page.goto(path);
-  return page;
+  // テストの終わりにコンテキストを閉じる（await using）
+  return { page, [Symbol.asyncDispose]: () => context.close() };
 }
