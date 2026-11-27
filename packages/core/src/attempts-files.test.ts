@@ -37,7 +37,14 @@ const files = {
   delete: vi.fn(async () => undefined),
   createDownloadUrl: vi.fn(async () => "https://example.com/dl"),
 } satisfies FileStore;
-const deps = { ddb, tableName: "t", now: () => new Date(NOW), files };
+const deps = {
+  ddb,
+  tableName: "t",
+  auditTableName: "audit",
+  actor: { type: "iam" as const, arn: "arn:aws:iam::123456789012:user/test" },
+  now: () => new Date(NOW),
+  files,
+};
 
 const exam = parseExamDefinition({
   examId: "ex",
@@ -70,6 +77,15 @@ function withAttempt(a: Partial<AttemptRecord> = {}, answerItem?: Record<string,
     .on(GetCommand, { Key: { PK: "ATTEMPT#at1", SK: "ANS#q3" } })
     .resolves({ Item: answerItem });
 }
+
+const txCanceled = (codes: string[]) =>
+  Object.assign(new Error("canceled"), {
+    name: "TransactionCanceledException",
+    CancellationReasons: codes.map((Code) => ({ Code })),
+  });
+
+/** 業務テーブルの更新と監査ログ（同じトランザクション） */
+const txItems = () => ddbMock.commandCalls(TransactWriteCommand)[0]?.args[0].input.TransactItems;
 
 beforeEach(() => {
   ddbMock.reset();
@@ -208,9 +224,10 @@ describe("extendAttempt", () => {
     ["回答中はそのまま", {}, "IN_PROGRESS"],
   ])("%s", async (_, a, next) => {
     withAttempt(a);
-    ddbMock.on(UpdateCommand).resolves({ Attributes: { ...attempt, status: next } });
-    await extend();
-    const input = ddbMock.commandCalls(UpdateCommand)[0]?.args[0].input;
+    ddbMock.on(TransactWriteCommand).resolves({});
+    const res = await extend();
+    expect(res.after).toMatchObject({ status: next, deadlineAt: "2026-12-15T14:59:59.999Z" });
+    const input = txItems()?.[0]?.Update;
     expect(input?.ExpressionAttributeValues).toMatchObject({
       ":next": next,
       ":cur": (a as Partial<AttemptRecord>).status ?? "IN_PROGRESS",
@@ -219,12 +236,17 @@ describe("extendAttempt", () => {
     });
     expect(input?.UpdateExpression).toContain("GSI2SK = :deadline");
     expect(input?.UpdateExpression).toContain("REMOVE expiredAt");
+    expect(txItems()?.[1]?.Put?.Item).toMatchObject({
+      action: "attempt.extend",
+      target: { type: "attempt", id: "at1" },
+      detail: { deadlineAfter: "2026-12-15T14:59:59.999Z", statusAfter: next },
+    });
   });
 
   it("提出済みは変更できない", async () => {
     withAttempt({ status: "SUBMITTED" });
     await expect(extend()).rejects.toBeInstanceOf(StateError);
-    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(ddbMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
   });
 
   it("過去日は指定できない", async () => {
@@ -240,18 +262,20 @@ describe("cancelAttempt", () => {
     ["未着手", { status: "NOT_STARTED" as const, startedAt: undefined }],
   ])("%s の受験を取り消す（読み込み時の状態を条件にする）", async (_, a) => {
     withAttempt(a);
-    ddbMock.on(UpdateCommand).resolves({
-      Attributes: { ...attempt, ...a, status: "CANCELED", canceledAt: NOW },
-    });
+    ddbMock.on(TransactWriteCommand).resolves({});
     const res = await cancel();
     expect(res.after).toMatchObject({ status: "CANCELED", canceledAt: NOW });
-    const input = ddbMock.commandCalls(UpdateCommand)[0]?.args[0].input;
+    const input = txItems()?.[0]?.Update;
     expect(input?.ConditionExpression).toBe("#s = :cur AND deadlineAt > :now");
     expect(input?.ExpressionAttributeValues).toEqual({
       ":canceled": "CANCELED",
       ":cur": (a as Partial<AttemptRecord>).status ?? "IN_PROGRESS",
       ":now": NOW,
       ":gsi2pk": "STATUS#CANCELED",
+    });
+    expect(txItems()?.[1]?.Put?.Item).toMatchObject({
+      action: "attempt.cancel",
+      target: { type: "attempt", id: "at1" },
     });
   });
 
@@ -264,14 +288,12 @@ describe("cancelAttempt", () => {
   ])("%s は取り消せない", async (_, a) => {
     withAttempt(a);
     await expect(cancel()).rejects.toBeInstanceOf(StateError);
-    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(ddbMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
   });
 
   it("読み込み後に提出された・期限を迎えた場合は StateError", async () => {
     withAttempt();
-    ddbMock
-      .on(UpdateCommand)
-      .rejects(Object.assign(new Error("failed"), { name: "ConditionalCheckFailedException" }));
+    ddbMock.on(TransactWriteCommand).rejects(txCanceled(["ConditionalCheckFailed", "None"]));
     await expect(cancel()).rejects.toThrow("状態が変わりました");
   });
 

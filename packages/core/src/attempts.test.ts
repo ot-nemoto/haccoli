@@ -2,7 +2,6 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
   GetCommand,
-  PutCommand,
   QueryCommand,
   TransactWriteCommand,
   UpdateCommand,
@@ -24,7 +23,13 @@ import { parseExamDefinition } from "./exams.js";
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "ap-northeast-1" }));
 const ddbMock = mockClient(ddb);
 const NOW = "2026-11-20T03:00:00.000Z";
-const deps = { ddb, tableName: "t", now: () => new Date(NOW) };
+const deps = {
+  ddb,
+  tableName: "t",
+  auditTableName: "audit",
+  actor: { type: "iam" as const, arn: "arn:aws:iam::123456789012:user/test" },
+  now: () => new Date(NOW),
+};
 
 const exam = parseExamDefinition({
   examId: "ex",
@@ -125,7 +130,8 @@ describe("issueAttempt", () => {
       status: "NOT_STARTED",
       deadlineAt: "2026-11-30T14:59:59.999Z",
     });
-    const item = ddbMock.commandCalls(PutCommand)[0]?.args[0].input.Item;
+    const items = ddbMock.commandCalls(TransactWriteCommand)[0]?.args[0].input.TransactItems;
+    const item = items?.[0]?.Put?.Item;
     expect(item).toMatchObject({
       PK: `ATTEMPT#${a.attemptId}`,
       SK: "META",
@@ -134,6 +140,18 @@ describe("issueAttempt", () => {
       GSI2SK: "2026-11-30T14:59:59.999Z",
     });
     expect(item).not.toHaveProperty("email");
+    // 同じトランザクションで監査ログを書く（メールアドレス・氏名は含めない）
+    const audit = items?.[1]?.Put;
+    expect(audit?.TableName).toBe("audit");
+    expect(audit?.Item).toMatchObject({
+      PK: "AUDIT#202611",
+      action: "attempt.issue",
+      status: "SUCCEEDED",
+      actor: deps.actor,
+      target: { type: "attempt", id: a.attemptId },
+      detail: { candidateSub: "cand", examId: "ex", examVersion: 2 },
+    });
+    expect(JSON.stringify(audit?.Item)).not.toMatch(/example\.com|候補/);
   });
 
   it("採点者・無効化された候補者には発行できない", async () => {

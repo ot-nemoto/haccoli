@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   GetCommand,
-  PutCommand,
   QueryCommand,
   ScanCommand,
   TransactWriteCommand,
@@ -21,6 +20,7 @@ import {
   fileAnswerRequestSchema,
   textAnswerSchema,
 } from "@haccoli/shared/schemas";
+import { type AuditDeps, auditPut } from "./audit.js";
 import { validateDeadlineDate } from "./deadline.js";
 import { NotFoundError, StateError, ValidationError, VersionConflictError } from "./errors.js";
 import { type DataDeps, getExamSummary, getExamVersion } from "./exams.js";
@@ -97,7 +97,7 @@ export function effectiveStatus(attempt: AttemptRecord, now: Date): AttemptStatu
 
 /** 受験を発行する（最新版の課題で、期限 = 指定日 23:59:59 JST）。docs/design.md §8 attempt:issue */
 export async function issueAttempt(
-  deps: DataDeps,
+  deps: DataDeps & AuditDeps,
   input: { email: string; examId: string; deadline: string; force?: boolean },
 ): Promise<AttemptRecord> {
   const now = nowOf(deps);
@@ -125,10 +125,26 @@ export async function issueAttempt(
     deadlineAt,
   };
   await deps.ddb.send(
-    new PutCommand({
-      TableName: deps.tableName,
-      Item: toItem(attempt),
-      ConditionExpression: "attribute_not_exists(PK)",
+    new TransactWriteCommand({
+      TransactItems: [
+        {
+          Put: {
+            TableName: deps.tableName,
+            Item: toItem(attempt),
+            ConditionExpression: "attribute_not_exists(PK)",
+          },
+        },
+        auditPut(deps, {
+          action: "attempt.issue",
+          target: { type: "attempt", id: attempt.attemptId },
+          detail: {
+            candidateSub: user.sub,
+            examId: exam.examId,
+            examVersion: exam.latestVersion,
+            deadlineAt,
+          },
+        }),
+      ],
     }),
   );
   return attempt;
@@ -677,7 +693,7 @@ export async function expireAttempts(deps: DataDeps): Promise<{ expired: string[
  * 開始済みなら IN_PROGRESS、未着手なら NOT_STARTED に戻す。提出済み・取消は変更不可。
  */
 export async function extendAttempt(
-  deps: DataDeps,
+  deps: DataDeps & AuditDeps,
   input: { attemptId: string; deadline: string; force?: boolean },
 ): Promise<{ before: AttemptRecord; after: AttemptRecord }> {
   const now = nowOf(deps);
@@ -694,27 +710,43 @@ export async function extendAttempt(
         : "NOT_STARTED"
       : before.status;
   try {
-    const res = await deps.ddb.send(
-      new UpdateCommand({
-        TableName: deps.tableName,
-        Key: keys.attemptMeta(input.attemptId),
-        UpdateExpression:
-          "SET #s = :next, deadlineAt = :deadline, GSI2PK = :gsi2pk, GSI2SK = :deadline REMOVE expiredAt",
-        // 読み取り後に提出・期限処理された場合は失敗させる
-        ConditionExpression: "#s = :cur",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":next": next,
-          ":cur": before.status,
-          ":deadline": deadlineAt,
-          ":gsi2pk": keys.attemptsByStatus(next, "").GSI2PK,
-        },
-        ReturnValues: "ALL_NEW",
+    await deps.ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: deps.tableName,
+              Key: keys.attemptMeta(input.attemptId),
+              UpdateExpression:
+                "SET #s = :next, deadlineAt = :deadline, GSI2PK = :gsi2pk, GSI2SK = :deadline REMOVE expiredAt",
+              // 読み取り後に提出・期限処理された場合は失敗させる
+              ConditionExpression: "#s = :cur",
+              ExpressionAttributeNames: { "#s": "status" },
+              ExpressionAttributeValues: {
+                ":next": next,
+                ":cur": before.status,
+                ":deadline": deadlineAt,
+                ":gsi2pk": keys.attemptsByStatus(next, "").GSI2PK,
+              },
+            },
+          },
+          auditPut(deps, {
+            action: "attempt.extend",
+            target: { type: "attempt", id: input.attemptId },
+            detail: {
+              deadlineBefore: before.deadlineAt,
+              deadlineAfter: deadlineAt,
+              statusBefore: before.status,
+              statusAfter: next,
+            },
+          }),
+        ],
       }),
     );
-    return { before, after: toAttempt(res.Attributes ?? {}) };
+    // 条件（状態が読んだときのまま）を満たして更新したので、更新後の値は読んだ値から決まる
+    return { before, after: { ...before, status: next, deadlineAt } };
   } catch (e) {
-    if (isConditionFailure(e)) {
+    if (transactionFailureCodes(e)?.[0] === "ConditionalCheckFailed") {
       throw new StateError("INVALID", "受験の状態が変わりました。もう一度実行してください");
     }
     throw e;
@@ -726,7 +758,7 @@ export async function extendAttempt(
  * 期限切れ（バッチ処理前を含む）・提出済み以降・取消済みは不可。保存済みの回答は削除しない。
  */
 export async function cancelAttempt(
-  deps: DataDeps,
+  deps: DataDeps & AuditDeps,
   input: { attemptId: string },
 ): Promise<{ before: AttemptRecord; after: AttemptRecord }> {
   const now = nowOf(deps);
@@ -736,28 +768,39 @@ export async function cancelAttempt(
   if (status !== "NOT_STARTED" && status !== "IN_PROGRESS") {
     throw new StateError("INVALID", `この受験は取り消せません（${status}）`);
   }
+  // 判定から書き込みまでに期限を迎えた場合も取り消さないよう、書き込み直前の時刻を使う
+  const canceledAt = nowOf(deps).toISOString();
   try {
-    const res = await deps.ddb.send(
-      new UpdateCommand({
-        TableName: deps.tableName,
-        Key: keys.attemptMeta(input.attemptId),
-        UpdateExpression: "SET #s = :canceled, canceledAt = :now, GSI2PK = :gsi2pk",
-        // 読み取り後に開始・提出・期限処理された場合や、期限を迎えた場合は失敗させる
-        ConditionExpression: "#s = :cur AND deadlineAt > :now",
-        ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: {
-          ":canceled": "CANCELED",
-          ":cur": before.status,
-          // 判定から書き込みまでに期限を迎えた場合も取り消さないよう、書き込み直前の時刻を使う
-          ":now": nowOf(deps).toISOString(),
-          ":gsi2pk": keys.attemptsByStatus("CANCELED", "").GSI2PK,
-        },
-        ReturnValues: "ALL_NEW",
+    await deps.ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: deps.tableName,
+              Key: keys.attemptMeta(input.attemptId),
+              UpdateExpression: "SET #s = :canceled, canceledAt = :now, GSI2PK = :gsi2pk",
+              // 読み取り後に開始・提出・期限処理された場合や、期限を迎えた場合は失敗させる
+              ConditionExpression: "#s = :cur AND deadlineAt > :now",
+              ExpressionAttributeNames: { "#s": "status" },
+              ExpressionAttributeValues: {
+                ":canceled": "CANCELED",
+                ":cur": before.status,
+                ":now": canceledAt,
+                ":gsi2pk": keys.attemptsByStatus("CANCELED", "").GSI2PK,
+              },
+            },
+          },
+          auditPut(deps, {
+            action: "attempt.cancel",
+            target: { type: "attempt", id: input.attemptId },
+            detail: { statusBefore: before.status },
+          }),
+        ],
       }),
     );
-    return { before, after: toAttempt(res.Attributes ?? {}) };
+    return { before, after: { ...before, status: "CANCELED", canceledAt } };
   } catch (e) {
-    if (isConditionFailure(e)) {
+    if (transactionFailureCodes(e)?.[0] === "ConditionalCheckFailed") {
       throw new StateError("INVALID", "受験の状態が変わりました。もう一度実行してください");
     }
     throw e;

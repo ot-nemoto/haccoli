@@ -21,6 +21,7 @@ import {
   toAssignment,
   transactionFailureCodes,
 } from "./attempts.js";
+import { type AuditDeps, auditPut } from "./audit.js";
 import { NotFoundError, StateError, ValidationError, VersionConflictError } from "./errors.js";
 import type { DataDeps } from "./exams.js";
 import { GSI1, keys } from "./keys.js";
@@ -37,7 +38,7 @@ const notFound = () => new NotFoundError("受験が見つかりません");
  * 既に割り当て済みの採点者は skipped として返す。
  */
 export async function assignGraders(
-  deps: DataDeps,
+  deps: DataDeps & AuditDeps,
   input: { attemptId: string; graderEmails: string[] },
 ): Promise<{ assigned: UserProfile[]; skipped: UserProfile[]; attempt: AttemptRecord }> {
   const graders: UserProfile[] = [];
@@ -119,6 +120,11 @@ export async function assignGraders(
               },
             },
             attemptUpdate,
+            auditPut(deps, {
+              action: "attempt.assign",
+              target: { type: "attempt", id: input.attemptId },
+              detail: { graderSub: grader.sub, ...(toGrading ? { statusAfter: "GRADING" } : {}) },
+            }),
           ],
         }),
       );

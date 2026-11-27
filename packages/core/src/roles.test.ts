@@ -27,6 +27,8 @@ const deps = {
   ddb,
   userPoolId: "pool",
   tableName: "t",
+  auditTableName: "audit",
+  actor: { type: "iam" as const, arn: "arn:aws:iam::123456789012:user/test" },
 };
 
 const item = (sub: string, roles: string[] | undefined, extra: Record<string, unknown> = {}) => ({
@@ -57,10 +59,24 @@ beforeEach(() => {
     calls.push(`cognito:remove:${i.GroupName}`);
     return {};
   });
-  ddbMock.on(UpdateCommand).callsFake(() => {
+  // 監査ログ（auditTableName）の書き込みは数えない
+  ddbMock.on(UpdateCommand, { TableName: "t" }).callsFake(() => {
     calls.push("ddb:update");
     return {};
   });
+});
+
+/** 業務テーブルへの UpdateCommand（監査ログを除く） */
+const tableUpdates = () =>
+  ddbMock
+    .commandCalls(UpdateCommand)
+    .map((c) => c.args[0].input)
+    .filter((i) => i.TableName === "t");
+
+/** 管理者（画面）としての操作 */
+const asAdmin = (sub: string) => ({
+  ...deps,
+  actor: { type: "admin" as const, sub, name: "管理者" },
 });
 
 const withUser = (u: Record<string, unknown>) => {
@@ -100,10 +116,8 @@ describe("registerUser（複数ロール）", () => {
     });
     expect(u.roles).toEqual(["grader", "admin"]);
     expect(calls).toEqual(["cognito:add:grader", "cognito:add:admin"]);
-    expect(ddbMock.commandCalls(PutCommand)[0]?.args[0].input.Item?.roles).toEqual([
-      "grader",
-      "admin",
-    ]);
+    const profile = ddbMock.commandCalls(PutCommand).find((c) => c.args[0].input.TableName === "t");
+    expect(profile?.args[0].input.Item?.roles).toEqual(["grader", "admin"]);
   });
 
   it("候補者は他のロールと兼ねられない", async () => {
@@ -120,7 +134,7 @@ describe("addRole", () => {
     const u = await addRole(deps, { email: "g@example.com", role: "admin" });
     expect(u.roles).toEqual(["grader", "admin"]);
     expect(calls).toEqual(["cognito:add:admin", "ddb:update"]);
-    const update = ddbMock.commandCalls(UpdateCommand)[0]?.args[0].input;
+    const update = tableUpdates()[0];
     expect(update?.UpdateExpression).toBe("SET #rs = :next REMOVE #r");
     expect(update?.ExpressionAttributeValues?.[":next"]).toEqual(["grader", "admin"]);
     // 読み込んだ後に他の操作で変わっていたら失敗させる（移行前のアイテムにも対応）
@@ -132,7 +146,7 @@ describe("addRole", () => {
   it("条件には保存されているままの roles（順序・未知の値を含む）を使う", async () => {
     withUser(item("g", ["admin", "x-unknown", "grader"]));
     await removeRole(deps, { email: "g@example.com", role: "admin" });
-    const update = ddbMock.commandCalls(UpdateCommand)[0]?.args[0].input;
+    const update = tableUpdates()[0];
     expect(update?.ConditionExpression).toBe("#rs = :prev");
     expect(update?.ExpressionAttributeValues?.[":prev"]).toEqual(["admin", "x-unknown", "grader"]);
     expect(update?.ExpressionAttributeValues?.[":next"]).toEqual(["grader"]);
@@ -186,6 +200,23 @@ describe("removeRole", () => {
     const u = await removeRole(deps, { email: "g@example.com", role: "admin" });
     expect(u.roles).toEqual(["grader"]);
     expect(calls).toEqual(["ddb:update", "cognito:remove:admin"]);
+    // 実行前に STARTED、成功後に変更後のロールを記録する
+    const started = ddbMock.commandCalls(PutCommand)[0]?.args[0].input;
+    expect(started?.TableName).toBe("audit");
+    expect(started?.Item).toMatchObject({
+      action: "user.roles",
+      status: "STARTED",
+      target: { type: "user", id: "g" },
+      detail: { removed: "admin", rolesBefore: ["grader", "admin"] },
+    });
+    const finished = ddbMock
+      .commandCalls(UpdateCommand)
+      .map((c) => c.args[0].input)
+      .find((i) => i.TableName === "audit");
+    expect(finished?.ExpressionAttributeValues).toMatchObject({
+      ":status": "SUCCEEDED",
+      ":detail": { removed: "admin", rolesBefore: ["grader", "admin"], rolesAfter: ["grader"] },
+    });
   });
 
   it("DynamoDB から外れていてもグループは外す（途中で失敗した後の再実行）", async () => {
@@ -206,9 +237,11 @@ describe("removeRole", () => {
     it("自分自身の admin は外せない", async () => {
       withUser(item("me", ["grader", "admin"]));
       await expect(
-        removeRole(deps, { email: "me@example.com", role: "admin" }, { adminSub: "me" }),
+        removeRole(asAdmin("me"), { email: "me@example.com", role: "admin" }),
       ).rejects.toThrow("自分自身");
       expect(calls).toEqual([]);
+      // 拒否した操作は記録しない
+      expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
     });
 
     it("有効な管理者が最後の 1 人なら外せない（無効化された管理者は数えない）", async () => {
@@ -217,7 +250,7 @@ describe("removeRole", () => {
         Items: [item("b", ["grader", "admin"]), item("c", ["admin"], { disabled: true })],
       });
       await expect(
-        removeRole(deps, { email: "b@example.com", role: "admin" }, { adminSub: "a" }),
+        removeRole(asAdmin("a"), { email: "b@example.com", role: "admin" }),
       ).rejects.toThrow("最後の管理者");
       expect(calls).toEqual([]);
     });
@@ -227,7 +260,7 @@ describe("removeRole", () => {
       ddbMock.on(ScanCommand).resolves({
         Items: [item("a", ["admin"]), item("b", ["grader", "admin"])],
       });
-      await removeRole(deps, { email: "b@example.com", role: "admin" }, { adminSub: "a" });
+      await removeRole(asAdmin("a"), { email: "b@example.com", role: "admin" });
       expect(calls).toEqual(["ddb:update", "cognito:remove:admin"]);
     });
   });

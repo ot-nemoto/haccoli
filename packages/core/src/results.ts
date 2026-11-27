@@ -6,6 +6,7 @@ import {
   getAttemptBundle,
   listAttempts,
 } from "./attempts.js";
+import { type AuditDeps, writeAudit } from "./audit.js";
 import type { DataDeps } from "./exams.js";
 import { getExamVersion } from "./exams.js";
 import { getUserBySub } from "./users.js";
@@ -27,9 +28,10 @@ export interface ResultRow {
 /**
  * 課題の採点結果を集める（docs/design.md §8 result:export）。管理者用のため候補者の email を含む。
  * 問題の列は全版の問題を版の順に並べる（版によって問題が異なる場合に備える）。
+ * 個人情報を含むため、渡す前に監査ログに記録する（記録できなければ渡さない。§14.4・§14.7）。
  */
 export async function collectResults(
-  deps: DataDeps,
+  deps: DataDeps & AuditDeps,
   examId: string,
 ): Promise<{ questions: ResultQuestion[]; rows: ResultRow[] }> {
   const attempts = (await listAttempts(deps)).filter((a) => a.examId === examId);
@@ -76,5 +78,10 @@ export async function collectResults(
       });
     }
   }
+  await writeAudit(deps, {
+    action: "result.export",
+    target: { type: "exam", id: examId },
+    detail: { attempts: attempts.length, rows: rows.length },
+  });
   return { questions, rows };
 }

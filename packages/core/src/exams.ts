@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import type { ExamDefinition } from "@haccoli/shared";
 import { examDefinitionSchema } from "@haccoli/shared/schemas";
+import { type AuditDeps, auditPut } from "./audit.js";
 import { ValidationError } from "./errors.js";
 import type { FileStore } from "./files.js";
 import { keys } from "./keys.js";
@@ -116,7 +117,7 @@ export type PublishResult =
  * 版の採番は META の latestVersion を条件付きで更新して競合を防ぐ。
  */
 export async function publishExam(
-  deps: DataDeps,
+  deps: DataDeps & AuditDeps,
   definition: ExamDefinition,
 ): Promise<PublishResult> {
   const def = parseExamDefinition(definition);
@@ -171,6 +172,11 @@ export async function publishExam(
             ConditionExpression: "attribute_not_exists(PK)",
           },
         },
+        auditPut(deps, {
+          action: "exam.publish",
+          target: { type: "exam", id: def.examId },
+          detail: { version, title: def.title },
+        }),
       ],
     }),
   );
