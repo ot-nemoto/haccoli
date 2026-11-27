@@ -10,6 +10,7 @@ import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AttemptRecord,
+  cancelAttempt,
   createUploadUrl,
   expireAttempts,
   extendAttempt,
@@ -228,5 +229,52 @@ describe("extendAttempt", () => {
 
   it("過去日は指定できない", async () => {
     await expect(extend("2026-11-01")).rejects.toThrow("過去");
+  });
+});
+
+describe("cancelAttempt", () => {
+  const cancel = () => cancelAttempt(deps, { attemptId: "at1" });
+
+  it.each([
+    ["受験中", {}],
+    ["未着手", { status: "NOT_STARTED" as const, startedAt: undefined }],
+  ])("%s の受験を取り消す（読み込み時の状態を条件にする）", async (_, a) => {
+    withAttempt(a);
+    ddbMock.on(UpdateCommand).resolves({ Attributes: { ...attempt, ...a, status: "CANCELED" } });
+    const res = await cancel();
+    expect(res.after.status).toBe("CANCELED");
+    const input = ddbMock.commandCalls(UpdateCommand)[0]?.args[0].input;
+    expect(input?.ConditionExpression).toBe("#s = :cur");
+    expect(input?.ExpressionAttributeValues).toEqual({
+      ":canceled": "CANCELED",
+      ":cur": (a as Partial<AttemptRecord>).status ?? "IN_PROGRESS",
+      ":now": NOW,
+      ":gsi2pk": "STATUS#CANCELED",
+    });
+  });
+
+  it.each([
+    ["提出済み", { status: "SUBMITTED" as const }],
+    ["採点中", { status: "GRADING" as const }],
+    ["期限切れ", { status: "EXPIRED" as const }],
+    ["期限が過ぎた受験中（バッチ処理前）", { deadlineAt: "2026-11-20T14:59:59.999Z" }],
+    ["取消済み", { status: "CANCELED" as const }],
+  ])("%s は取り消せない", async (_, a) => {
+    withAttempt(a);
+    await expect(cancel()).rejects.toBeInstanceOf(StateError);
+    expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+  });
+
+  it("読み込み後に提出された場合は StateError", async () => {
+    withAttempt();
+    ddbMock
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error("failed"), { name: "ConditionalCheckFailedException" }));
+    await expect(cancel()).rejects.toThrow("状態が変わりました");
+  });
+
+  it("存在しない受験は NotFound", async () => {
+    ddbMock.on(GetCommand).resolves({});
+    await expect(cancel()).rejects.toBeInstanceOf(NotFoundError);
   });
 });

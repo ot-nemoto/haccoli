@@ -131,6 +131,7 @@ npm run admin -- --help
 | `exam:list`                                                    | 課題と最新版の一覧                                                            |
 | `attempt:issue --email --exam --deadline YYYY-MM-DD [--force]` | 受験を発行（最新版、期限 = 指定日 23:59 JST。当日指定は `--force`）           |
 | `attempt:extend --attempt --deadline YYYY-MM-DD [--force]`     | 受験期限を変更（期限切れ `EXPIRED` からの復帰を含む。提出済み・取消は不可）   |
+| `attempt:cancel --attempt`                                     | 受験を取消（未着手・受験中のみ。保存済みの回答は残す。元に戻せない）          |
 | `attempt:list [--status]`                                      | 受験の一覧（期限切れはバッチ前でも `EXPIRED` と表示）                         |
 | `attempt:assign --attempt --grader <email...>`                 | 採点者を割り当て（複数可。EXPIRED / CANCELED は不可。割り当ての解除は未対応） |
 | `result:export --exam [--out results.csv]`                     | 採点結果を CSV 出力（受験 × 採点者ごとに 1 行。候補者の個人情報を含む）       |
