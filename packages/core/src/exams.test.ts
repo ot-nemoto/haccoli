@@ -94,7 +94,13 @@ describe("parseExamDefinition", () => {
 describe("publishExam", () => {
   const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "ap-northeast-1" }));
   const ddbMock = mockClient(ddb);
-  const deps = { ddb, tableName: "t", now: () => new Date("2026-11-20T00:00:00Z") };
+  const deps = {
+    ddb,
+    tableName: "t",
+    auditTableName: "audit",
+    actor: { type: "iam" as const, arn: "arn:aws:iam::123456789012:user/test" },
+    now: () => new Date("2026-11-20T00:00:00Z"),
+  };
   const def = parseExamDefinition({
     examId: "e1",
     title: "t",
@@ -114,6 +120,14 @@ describe("publishExam", () => {
     const items = ddbMock.commandCalls(TransactWriteCommand)[0]?.args[0].input.TransactItems;
     expect(items?.[0]?.Put?.ConditionExpression).toBe("attribute_not_exists(PK)");
     expect(items?.[1]?.Put?.Item).toMatchObject({ PK: "EXAM#e1", SK: "V#000001", version: 1 });
+    // 同じトランザクションで監査ログを書く
+    expect(items?.[2]?.Put?.TableName).toBe("audit");
+    expect(items?.[2]?.Put?.Item).toMatchObject({
+      action: "exam.publish",
+      target: { type: "exam", id: "e1" },
+      detail: { version: 1 },
+      status: "SUCCEEDED",
+    });
   });
 
   it("内容が変わっていれば次の版を作成する（META の版を条件にする）", async () => {

@@ -16,6 +16,7 @@ import {
   ScanCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { type AuditDeps, withAudit } from "./audit.js";
 import { normalizeEmail } from "./email.js";
 import { StateError, ValidationError } from "./errors.js";
 import { GSI1, keys } from "./keys.js";
@@ -28,6 +29,9 @@ export interface UserDeps {
   tableName: string;
   now?: () => Date;
 }
+
+/** 記録を伴う変更操作の依存（監査ログ。docs/design.md §14.4） */
+export type AuditedUserDeps = UserDeps & AuditDeps;
 
 export interface UserProfile {
   sub: string;
@@ -59,7 +63,7 @@ export class UserNotFoundError extends Error {
  * - DynamoDB: User プロフィールを保存（Cognito 作成後に失敗した場合は Cognito 側を巻き戻す）
  */
 export async function registerUser(
-  deps: UserDeps,
+  deps: AuditedUserDeps,
   input: { email: string; name: string; roles: Role[] },
 ): Promise<UserProfile> {
   const email = normalizeEmail(input.email);
@@ -71,6 +75,19 @@ export async function registerUser(
 
   if (await findUserByEmail(deps, email)) throw new UserAlreadyExistsError(email);
 
+  // sub は Cognito で作成するまで決まらないため、対象は成功時に記録する
+  return withAudit(
+    deps,
+    { action: "user.add", detail: { roles } },
+    () => createUser(deps, { email, name, roles }),
+    (user) => ({ target: { type: "user", id: user.sub } }),
+  );
+}
+
+async function createUser(
+  deps: UserDeps,
+  { email, name, roles }: { email: string; name: string; roles: Role[] },
+): Promise<UserProfile> {
   let sub: string;
   try {
     const created = await deps.cognito.send(
@@ -200,21 +217,31 @@ export async function listUsers(
   return users.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-export async function disableUser(deps: UserDeps, rawEmail: string): Promise<UserProfile> {
+export async function disableUser(deps: AuditedUserDeps, rawEmail: string): Promise<UserProfile> {
   const user = await findUserByEmail(deps, rawEmail);
   if (!user) throw new UserNotFoundError(rawEmail);
-  await deps.cognito.send(
-    new AdminDisableUserCommand({ UserPoolId: deps.userPoolId, Username: user.email }),
+  return withAudit(
+    deps,
+    {
+      action: "user.disable",
+      target: { type: "user", id: user.sub },
+      detail: { roles: user.roles },
+    },
+    async () => {
+      await deps.cognito.send(
+        new AdminDisableUserCommand({ UserPoolId: deps.userPoolId, Username: user.email }),
+      );
+      await deps.ddb.send(
+        new UpdateCommand({
+          TableName: deps.tableName,
+          Key: keys.user(user.sub),
+          UpdateExpression: "SET disabled = :true",
+          ExpressionAttributeValues: { ":true": true },
+        }),
+      );
+      return { ...user, disabled: true };
+    },
   );
-  await deps.ddb.send(
-    new UpdateCommand({
-      TableName: deps.tableName,
-      Key: keys.user(user.sub),
-      UpdateExpression: "SET disabled = :true",
-      ExpressionAttributeValues: { ":true": true },
-    }),
-  );
-  return { ...user, disabled: true };
 }
 
 /** 移行前のアイテム（role のみ）は [role] として読む */
@@ -239,19 +266,13 @@ function unusablePassword(): string {
   return `${randomBytes(48).toString("base64url")}Aa1!`;
 }
 
-/** ロールの付与・削除を行う人。管理者（画面）なら sub を渡し、自分自身・最後の管理者の保護を効かせる */
-export interface RoleActor {
-  /** 管理者（Cognito ユーザー）の sub。スーパー管理者（CLI）は省略 */
-  adminSub?: string;
-}
-
 /**
  * ロールを付与する（§14.3）。Cognito（グループ）→ DynamoDB の順に行い、DynamoDB で失敗したら Cognito を戻す。
  * どちらか片方だけ成功しても、API は両方にあるロールしか認めないため権限は残らない。
  * 付与済みでもグループはそろえるので、途中で失敗した場合は再実行で直る。
  */
 export async function addRole(
-  deps: UserDeps,
+  deps: AuditedUserDeps,
   input: { email: string; role: Role },
 ): Promise<UserProfile> {
   const user = await findUserByEmail(deps, input.email);
@@ -260,17 +281,30 @@ export async function addRole(
   const problem = rolesProblem(sortRoles([...user.roles, input.role]));
   if (problem && !user.roles.includes(input.role)) throw new ValidationError(problem);
 
-  await groupCommand(deps, "add", user.email, input.role);
-  if (user.roles.includes(input.role)) return user;
+  return withAudit(
+    deps,
+    {
+      action: "user.roles",
+      target: { type: "user", id: user.sub },
+      detail: { added: input.role, rolesBefore: user.roles },
+    },
+    () => grantRole(deps, user, input.role),
+    (after) => ({ detail: { rolesAfter: after.roles, changed: changedRoles(user, after) } }),
+  );
+}
+
+async function grantRole(deps: UserDeps, user: UserProfile, role: Role): Promise<UserProfile> {
+  await groupCommand(deps, "add", user.email, role);
+  if (user.roles.includes(role)) return user;
   try {
-    const roles = await updateRoles(deps, user.sub, (cur) => [...cur, input.role]);
+    const roles = await updateRoles(deps, user.sub, (cur) => [...cur, role]);
     return { ...user, roles };
   } catch (e) {
     // 同時に付与されて DynamoDB に入っていれば成功とし、グループは外さない
     const latest = await getUserBySub(deps, user.sub).catch(() => undefined);
-    if (latest?.roles.includes(input.role)) return latest;
+    if (latest?.roles.includes(role)) return latest;
     try {
-      await groupCommand(deps, "remove", user.email, input.role);
+      await groupCommand(deps, "remove", user.email, role);
     } catch {
       // 戻せなくても、DynamoDB の roles にないロールは API で認められない（元のエラーを優先する）
     }
@@ -284,29 +318,48 @@ export async function addRole(
  * DynamoDB から外れていてもグループは外すので、途中で失敗した場合は再実行で直る。
  */
 export async function removeRole(
-  deps: UserDeps,
+  deps: AuditedUserDeps,
   input: { email: string; role: Role },
-  actor: RoleActor = {},
 ): Promise<UserProfile> {
   const user = await findUserByEmail(deps, input.email);
   if (!user) throw new UserNotFoundError(input.email);
-  if (!user.roles.includes(input.role)) {
-    await groupCommand(deps, "remove", user.email, input.role);
-    return user;
-  }
-  if (user.roles.length === 1) throw lastRole();
-  if (input.role === "admin" && actor.adminSub !== undefined) {
-    await assertAdminRemovable(deps, user, actor.adminSub);
+  const held = user.roles.includes(input.role);
+  if (held && user.roles.length === 1) throw lastRole();
+  // 管理者（画面）による操作では、自分自身・最後の管理者の admin を外させない（§14.1）
+  if (held && input.role === "admin" && deps.actor.type === "admin") {
+    await assertAdminRemovable(deps, user, deps.actor.sub);
   }
 
-  const roles = await updateRoles(deps, user.sub, (cur) => {
-    const next = cur.filter((r) => r !== input.role);
-    if (next.length === 0) throw lastRole();
-    return next;
-  });
-  await groupCommand(deps, "remove", user.email, input.role);
-  return { ...user, roles };
+  return withAudit(
+    deps,
+    {
+      action: "user.roles",
+      target: { type: "user", id: user.sub },
+      detail: { removed: input.role, rolesBefore: user.roles },
+    },
+    async () => {
+      if (!held) {
+        await groupCommand(deps, "remove", user.email, input.role);
+        return user;
+      }
+      const roles = await updateRoles(deps, user.sub, (cur) => {
+        const next = cur.filter((r) => r !== input.role);
+        if (next.length === 0) throw lastRole();
+        return next;
+      });
+      await groupCommand(deps, "remove", user.email, input.role);
+      return { ...user, roles };
+    },
+    (after) => ({ detail: { rolesAfter: after.roles, changed: changedRoles(user, after) } }),
+  );
 }
+
+/**
+ * DynamoDB のロールが変わったか。付与済み・削除済みでも Cognito のグループはそろえるため記録は残すが、
+ * 実際の変更と区別できるようにする
+ */
+const changedRoles = (before: UserProfile, after: UserProfile) =>
+  before.roles.join(",") !== after.roles.join(",");
 
 const lastRole = () =>
   new ValidationError("最後のロールは外せません。利用を止める場合は無効化してください");
@@ -394,6 +447,17 @@ async function updateRoles(
  * 何度実行してもよい。
  */
 export async function migrateRoles(
+  deps: Pick<UserDeps, "ddb" | "tableName"> & AuditDeps,
+): Promise<{ migrated: number; skipped: number }> {
+  return withAudit(
+    deps,
+    { action: "user.migrate-roles" },
+    () => migrateRoleItems(deps),
+    (res) => ({ detail: { migrated: res.migrated, skipped: res.skipped } }),
+  );
+}
+
+async function migrateRoleItems(
   deps: Pick<UserDeps, "ddb" | "tableName">,
 ): Promise<{ migrated: number; skipped: number }> {
   let migrated = 0;

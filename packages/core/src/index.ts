@@ -1,4 +1,5 @@
 export * from "./attempts.js";
+export * from "./audit.js";
 export * from "./deadline.js";
 export * from "./email.js";
 export * from "./errors.js";

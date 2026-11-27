@@ -9,7 +9,9 @@ import {
   DeleteCommand,
   DynamoDBDocumentClient,
   GetCommand,
+  PutCommand,
   QueryCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +34,8 @@ const deps = {
   ddb,
   userPoolId: "pool",
   tableName: "t",
+  auditTableName: "audit",
+  actor: { type: "iam" as const, arn: "arn:aws:iam::123456789012:user/test" },
   now: () => new Date(NOW),
   fileVersions,
 };
@@ -188,6 +192,19 @@ describe("executePurge", () => {
       UserPoolId: "pool",
       Username: "cand@example.com",
     });
+    // 削除した事実（sub・受験 ID）だけを残し、メールアドレス・氏名は残さない
+    const started = ddbMock.commandCalls(PutCommand)[0]?.args[0].input;
+    expect(started?.TableName).toBe("audit");
+    expect(started?.Item).toMatchObject({
+      action: "user.purge",
+      status: "STARTED",
+      target: { type: "user", id: "cand" },
+      detail: { attemptIds: ["a1"] },
+    });
+    expect(JSON.stringify(started?.Item)).not.toContain("example.com");
+    expect(
+      ddbMock.commandCalls(UpdateCommand)[0]?.args[0].input.ExpressionAttributeValues?.[":status"],
+    ).toBe("SUCCEEDED");
   });
 
   it("Cognito のユーザーが削除済みでも続行する（再実行）", async () => {
@@ -229,6 +246,8 @@ describe("executePurge", () => {
     await expect(executePurge(deps, plan)).rejects.toThrow("対象が変わりました");
     expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(0);
     expect(fileVersions.deleteVersions).not.toHaveBeenCalled();
+    // 何も削除していないので記録しない
+    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
   });
 
   it("確認の間に採点中へ戻ったら拒否する", async () => {

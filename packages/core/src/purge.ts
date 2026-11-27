@@ -12,6 +12,7 @@ import {
   isConditionFailure,
   toAttempt,
 } from "./attempts.js";
+import { type AuditDeps, withAudit } from "./audit.js";
 import { StateError, ValidationError } from "./errors.js";
 import { GSI1, keys } from "./keys.js";
 import { findUserByEmail, type UserDeps, UserNotFoundError, type UserProfile } from "./users.js";
@@ -92,12 +93,24 @@ export async function planPurge(
  * 確認を待つ間に受験が発行・延長・再割り当てされた場合に備え、実行直前に対象を調べ直し、
  * 計画と違えば何も削除せずに中止する。受験ごとにも状態を読み直し、META は状態を条件に削除する。
  */
-export async function executePurge(deps: PurgeDeps, plan: PurgePlan): Promise<void> {
+export async function executePurge(deps: PurgeDeps & AuditDeps, plan: PurgePlan): Promise<void> {
   const fresh = await planPurge(deps, plan.user.email);
   if (fresh.user.sub !== plan.user.sub || planKey(fresh) !== planKey(plan)) {
     throw changed();
   }
+  // 削除した事実（対象の sub・受験 ID）だけを残す。メールアドレス・氏名は残さない（§14.4）
+  await withAudit(
+    deps,
+    {
+      action: "user.purge",
+      target: { type: "user", id: plan.user.sub },
+      detail: { attemptIds: plan.attempts.map((t) => t.attempt.attemptId) },
+    },
+    () => purge(deps, plan),
+  );
+}
 
+async function purge(deps: PurgeDeps, plan: PurgePlan): Promise<void> {
   for (const { attempt } of plan.attempts) {
     const current = await getAttemptMeta(deps, attempt.attemptId);
     if (!current || current.status !== attempt.status) throw changed();

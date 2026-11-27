@@ -1,6 +1,6 @@
 # 採用課題試験管理システム 設計書（MVP）
 
-- ステータス: Draft v0.6
+- ステータス: Draft v0.7
 - 対象: MVP（最小構成）
 - 前提スタック: TypeScript / Node.js（devcontainer: `typescript-node:24`）、AWS
 
@@ -14,6 +14,7 @@
 | v0.4 | 監視を **最小構成**（API エラー、SES バウンス率・苦情率）に絞り、prod のみ設定。概算コストを内訳付きで更新                                                                               |
 | v0.5 | `candidate:import` と CLI の監査ログを後続フェーズへ。運用手順書（[runbook.md](runbook.md)）を追加                                                                                       |
 | v0.6 | 管理者ロール（Cognito の `admin`）と管理画面を Phase 2 として追加（§14）。IAM で CLI を実行する管理者をスーパー管理者と呼ぶ。監査ログを管理画面と同時に実装する                          |
+| v0.7 | 監査ログを業務データと **別のテーブル** に保存する（§14.4、D13）。記録する操作と内容を確定                                                                                               |
 
 ---
 
@@ -249,9 +250,10 @@ erDiagram
 | Assignment           | `ATTEMPT#<attemptId>` | `ASSIGN#<graderSub>` | graderName, assignedAt, status(ASSIGNED/DRAFT/DONE)                                                                                   | GSI1: `GRADER#<sub>` / `ASSIGN#<assignedAt>`                                        |
 | Grade                | `ATTEMPT#<attemptId>` | `GRADE#<graderSub>`  | items: {qid: {score?, comment?}}, overallComment, finalizedAt                                                                         |                                                                                     |
 | ExamDraft（Phase 2） | `EXAM#<examId>`       | `DRAFT`              | 編集中の課題定義, version（楽観ロック）, updatedAt, updatedBy（§14.5）                                                                |                                                                                     |
-| AuditLog（Phase 2）  | `AUDIT#<yyyymm>`      | `<timestamp>#<uuid>` | actor, action, target, detail, status（§14.4）                                                                                        |                                                                                     |
+| AuditLog（Phase 2）  | `AUDIT#<yyyymm>`      | `<timestamp>#<uuid>` | actor, action, target, detail, status（**別テーブル**。§14.4）                                                                        |                                                                                     |
 
 - 受験 1 件に回答・割り当て・採点を同一 PK でぶら下げ、1 クエリで全体を取得
+- 監査ログ（AuditLog）だけは別のテーブル（`haccoli-<env>-audit`）に保存する。業務データと一緒に読むことがなく、保持・権限が違うため（§14.4、D13）
 - 課題定義は 1 版 1 アイテム（400KB 制約内に収まる想定。超える場合は本文を S3 に逃がす）
 - 採点者向けレスポンスは **candidateName のみ**を返し、email は返さない（API のレスポンス型で email を持たない専用 DTO を定義して漏洩を防ぐ）
 - Grade は「問題ごとの点数＋コメント」の汎用構造にとどめ、集計ルールは別途検討後に追加
@@ -367,7 +369,7 @@ stateDiagram-v2
 | `user:purge --email`                                  | 個人データ削除（Cognito・DynamoDB・S3）。候補者のみ・採点済みか取消・期限切れの受験のみ |
 | `admin:add --email [--name]` / `admin:remove --email` | 管理者の権限の付与・削除（Phase 2。採点者への付与、または新規登録）                     |
 
-- （**Phase 2**）CLI の変更操作はすべて実行者（IAM プリンシパル）・内容を DynamoDB の監査ログ（`AUDIT#<yyyymm>`）に残す（§14.4）。MVP では Cognito の操作のみ CloudTrail に残り、DynamoDB・S3 のデータ操作は残らないため、運用で台帳に記録する（[runbook.md](runbook.md) 5 章）
+- （**Phase 2**）CLI の変更操作はすべて実行者（IAM プリンシパル）・内容を DynamoDB の監査ログ（別テーブル `haccoli-<env>-audit`）に残す（§14.4。Step 7 で実装）。確認には `audit:list` を使う（[runbook.md](runbook.md) 2.9）
 - 本番操作時は確認プロンプトを出す
 
 ---
@@ -447,6 +449,7 @@ stateDiagram-v2
 | D10 | ロールの兼任         | `grader` と `admin` は兼任できる。`candidate` は兼ねない                                              |
 | D11 | 管理者の権限の付与   | 管理者同士で付与・削除できる（自分自身は外せない）                                                    |
 | D12 | 課題の登録           | 画面で作成・編集（下書き → 公開で新しい版）                                                           |
+| D13 | 監査ログの保存先     | 業務データと別の DynamoDB テーブル（操作と同じトランザクションで書ける。API から削除させない）        |
 
 ### 11.2 要確認（実装は仮置きで進行可能）
 
@@ -556,19 +559,26 @@ MVP は管理操作を CLI に限定していた（§3.1）。本番運用で、
 
 管理画面と同時に実装する（§8 で後続フェーズとしていたもの）。管理者（画面）とスーパー管理者（CLI）の **すべての変更操作** を記録する。
 
-| 項目   | 内容                                                                                                 |
-| ------ | ---------------------------------------------------------------------------------------------------- |
-| キー   | PK `AUDIT#<yyyymm>`、SK `<timestamp>#<uuid>`                                                         |
-| 実行者 | 管理者は `sub`・氏名、スーパー管理者は IAM のプリンシパル（`sts:GetCallerIdentity` の ARN）          |
-| 操作   | `user.add`・`user.roles`・`user.disable`・`exam.save`・`exam.publish`・`attempt.issue` など          |
-| 対象   | 利用者の `sub`・受験 ID・課題 ID など                                                                |
-| 内容   | 変更の要点（例: 付与したロール、新しい期限）。**回答・採点の本文や候補者のメールアドレスは含めない** |
+| 項目     | 内容                                                                                                                                                                                                                 |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| テーブル | 業務データと別のテーブル `haccoli-<env>-audit`（PITR を有効、prod は削除保護・RETAIN）                                                                                                                               |
+| キー     | PK `AUDIT#<yyyymm>`（JST の年月）、SK `<timestamp>#<uuid>`                                                                                                                                                           |
+| 実行者   | 管理者は `sub`・氏名、スーパー管理者は IAM のプリンシパル（`sts:GetCallerIdentity` の ARN）                                                                                                                          |
+| 操作     | `user.add`・`user.roles`・`user.disable`・`user.purge`・`user.migrate-roles`・`exam.publish`・`attempt.issue`・`attempt.extend`・`attempt.cancel`・`attempt.assign`・`result.export`（Step 9 で `exam.save` を追加） |
+| 対象     | 利用者の `sub`・受験 ID・課題 ID など                                                                                                                                                                                |
+| 内容     | 変更の要点（例: 付与したロール、新しい期限）。**回答・採点の本文や、対象者のメールアドレス・氏名は含めない**（対象者は `sub` で記録する。失敗の理由に含まれるメールアドレスは伏せる）                                |
 
 - 記録は `packages/core` の各操作で行い、API と CLI で漏れがないようにする。書き込むタイミングは操作の種類で分ける
   - **DynamoDB だけの操作**（受験の発行・延長・取消・割り当て、課題の保存・公開など）：操作と同じトランザクションで書く。記録できなければ操作も行われない
   - **Cognito・S3 にまたがる操作**（登録・ロールの変更・無効化・個人データの削除）：実行前に `status: STARTED` で書き、終わったら `SUCCEEDED` / `FAILED` に更新する。実行前の書き込みに失敗したら操作しない。最後の更新に失敗した場合は `STARTED` のまま残るので、一覧で「結果不明」と表示し、対象の状態を確かめる
-- 個人データの削除（`user:purge`）でも、監査ログには削除した事実（対象の `sub`・実行者・日時）が残る。メールアドレスは残さない
-- 保持期間は当面無期限（件数が少ないため）。必要になれば TTL を設定する
+- 登録（`user.add`）は Cognito で作るまで `sub` が決まらないため、対象は成功時に記録する（失敗した登録は対象なし）
+- 採点結果の CSV 出力（`result.export`）は読み取りだが、個人情報を含むため、データを渡す前に記録する（記録できなければ出力しない）
+- 個人データの削除（`user:purge`）でも、監査ログには削除した事実（対象の `sub`・受験 ID・実行者・日時）が残る。メールアドレス・氏名は残さない
+- **業務データと別のテーブルにする**（D13）。シングルテーブル（§6.1）は「一緒に読むデータを同じキーに置く」ための設計で、監査ログは業務データと一緒に読まない。分けることで次の利点がある。DynamoDB のトランザクションは同じアカウント・リージョンのテーブルをまたげるため、操作と同じトランザクションで書く方針は変わらない
+  - 利用者・受験の一覧（Scan）が監査ログを読まない
+  - 管理者 API の Lambda（Step 7-3）に、監査ログのテーブルへの書き込み（`PutItem`・`UpdateItem`）と読み取りだけを与え、削除させない。スーパー管理者（IAM）は削除できるため、CLI からの改ざんは CloudTrail と IAM の運用で防ぐ
+  - 保持期間・削除保護を業務データと別に決められる
+- 保持期間は当面無期限。件数は年に数千件・数 MB の見込み（管理者の変更操作 1 回につき 1 件）で、保存料金はほぼかからない。必要になれば TTL（例: 5 年）を設定する
 - 管理画面に一覧（月ごと・操作の種類で絞り込み）を設ける
 
 ### 14.5 課題の作成・編集

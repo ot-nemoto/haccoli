@@ -67,6 +67,7 @@ export class HaccoliStack extends Stack {
     new CfnOutput(this, "UserPoolId", { value: auth.userPool.userPoolId });
     new CfnOutput(this, "UserPoolClientId", { value: auth.webClient.userPoolClientId });
     new CfnOutput(this, "TableName", { value: data.table.tableName });
+    new CfnOutput(this, "AuditTableName", { value: data.auditTable.tableName });
     new CfnOutput(this, "ApiFunctionName", { value: api.handler.functionName });
     new CfnOutput(this, "ExpireFunctionName", { value: api.expireFunction.functionName });
     new CfnOutput(this, "SubmissionsBucket", { value: storage.submissions.bucketName });

@@ -30,7 +30,14 @@ const files = {
   delete: vi.fn(),
   createDownloadUrl: vi.fn(async (key: string, name: string) => `https://dl/${key}?n=${name}`),
 };
-const deps = { ddb, tableName: "t", now: () => new Date(NOW), files };
+const deps = {
+  ddb,
+  tableName: "t",
+  auditTableName: "audit",
+  actor: { type: "iam" as const, arn: "arn:aws:iam::123456789012:user/test" },
+  now: () => new Date(NOW),
+  files,
+};
 
 const exam = parseExamDefinition({
   examId: "ex",
@@ -122,6 +129,13 @@ describe("assignGraders", () => {
       ":prev": 0,
       ":count": 1,
     });
+    // 同じトランザクションで監査ログを書く（採点者は sub のみ）
+    expect(items?.[2]?.Put?.Item).toMatchObject({
+      action: "attempt.assign",
+      target: { type: "attempt", id: "at1" },
+      detail: { graderSub: "g1" },
+    });
+    expect(JSON.stringify(items?.[2]?.Put?.Item)).not.toMatch(/@|山田|採点 一郎/);
   });
 
   it("採点完了（GRADED）の受験に追加したら GRADING に戻す", async () => {

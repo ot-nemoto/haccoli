@@ -2,8 +2,9 @@ import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-clo
 import { CognitoIdentityProviderClient } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { S3Client } from "@aws-sdk/client-s3";
+import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import type { UserDeps } from "@haccoli/core";
+import type { AuditedUserDeps } from "@haccoli/core";
 
 export type EnvName = "dev" | "prod";
 
@@ -11,6 +12,7 @@ export interface StackOutputs {
   UserPoolId: string;
   UserPoolClientId: string;
   TableName: string;
+  AuditTableName: string;
   WebUrl: string;
   SubmissionsBucket: string;
 }
@@ -19,7 +21,8 @@ export interface Context {
   env: EnvName;
   region: string;
   outputs: StackOutputs;
-  deps: UserDeps;
+  /** 変更操作は監査ログに記録する。実行者は CLI を実行した IAM のプリンシパル（docs/design.md §14.4） */
+  deps: AuditedUserDeps;
   s3: S3Client;
 }
 
@@ -44,12 +47,21 @@ export async function createContext(env: string): Promise<Context> {
     "UserPoolId",
     "UserPoolClientId",
     "TableName",
+    "AuditTableName",
     "WebUrl",
     "SubmissionsBucket",
   ] as const) {
-    if (!raw[key]) throw new Error(`スタック ${stackName} に出力 ${key} がありません`);
+    if (!raw[key]) {
+      // 新しい出力（例: Step 7-2 の AuditTableName）を CLI が先に使うと起きる
+      throw new Error(
+        `スタック ${stackName} に出力 ${key} がありません。CLI より古いスタックの可能性があります。先に ${env} にデプロイしてください`,
+      );
+    }
   }
   const outputs = raw as unknown as StackOutputs;
+
+  const identity = await new STSClient({ region }).send(new GetCallerIdentityCommand({}));
+  if (!identity.Arn) throw new Error("実行者（IAM のプリンシパル）を取得できませんでした");
 
   return {
     env,
@@ -60,6 +72,8 @@ export async function createContext(env: string): Promise<Context> {
       ddb: DynamoDBDocumentClient.from(new DynamoDBClient({ region })),
       userPoolId: outputs.UserPoolId,
       tableName: outputs.TableName,
+      auditTableName: outputs.AuditTableName,
+      actor: { type: "iam", arn: identity.Arn },
     },
     s3: new S3Client({ region }),
   };

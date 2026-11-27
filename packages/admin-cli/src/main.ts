@@ -15,6 +15,7 @@ import {
   s3FileVersionStore,
 } from "@haccoli/core";
 import { Command } from "commander";
+import { addAuditCommands } from "./audit.js";
 import { confirmAlways, confirmIfProd } from "./confirm.js";
 import { createContext } from "./context.js";
 import { addExamCommands } from "./exams.js";
@@ -136,6 +137,7 @@ program
 
 addExamCommands(program, globals);
 addGradingCommands(program, globals);
+addAuditCommands(program, globals);
 
 program
   .command("user:purge")

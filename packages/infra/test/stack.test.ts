@@ -78,6 +78,39 @@ describe("SPA 書き換え関数", () => {
   });
 });
 
+describe("DynamoDB", () => {
+  it("監査ログは業務データと別のテーブルで、PITR を有効にする（docs/design.md §14.4）", () => {
+    template.hasResourceProperties("AWS::DynamoDB::GlobalTable", {
+      TableName: "haccoli-dev-audit",
+      KeySchema: [
+        { AttributeName: "PK", KeyType: "HASH" },
+        { AttributeName: "SK", KeyType: "RANGE" },
+      ],
+      Replicas: [
+        Match.objectLike({
+          PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+        }),
+      ],
+    });
+    template.hasOutput("AuditTableName", {});
+  });
+
+  it("API・期限処理の Lambda の DynamoDB 権限は業務データのテーブルだけ（監査ログは管理者 API の Step 7-3）", () => {
+    const resources = Object.values(template.findResources("AWS::IAM::Policy")).flatMap((p) =>
+      p.Properties.PolicyDocument.Statement.filter((s: { Action: string | string[] }) =>
+        [s.Action].flat().some((a) => a.startsWith("dynamodb:")),
+      ).flatMap((s: { Resource: unknown }) => [s.Resource].flat()),
+    );
+    expect(resources.length).toBeGreaterThan(0);
+    for (const r of resources) {
+      // テーブル名の文字列やワイルドカードではなく、業務データのテーブルの ARN（と GSI）を参照する
+      expect(typeof r).not.toBe("string");
+      expect(JSON.stringify(r)).toMatch(/"DataTable[0-9A-F]{8}"/);
+      expect(JSON.stringify(r)).not.toContain("AuditTable");
+    }
+  });
+});
+
 describe("API", () => {
   it("Lambda の DynamoDB 権限は必要な操作のみ（Scan・削除・一括取得なし）", () => {
     const policies = template.findResources("AWS::IAM::Policy", {
