@@ -357,7 +357,7 @@ stateDiagram-v2
 | `attempt:assign --attempt --grader <email>...`       | 採点者割り当て（複数指定可。`EXPIRED` / `CANCELED` は不可） |
 | `attempt:list [--status]`                            | 受験一覧（進捗・期限・採点状況）                            |
 | `result:export --exam [--out results.csv]`           | 採点結果の CSV 出力（採点者別の問題ごとの点数・コメント）   |
-| `user:purge --email`                                 | 個人データ削除（Cognito・DynamoDB・S3）                     |
+| `user:purge --email`                                 | 個人データ削除（Cognito・DynamoDB・S3）。候補者のみ・採点済みか取消・期限切れの受験のみ |
 
 - CLI の操作はすべて実行者（IAM プリンシパル）・内容を DynamoDB の監査ログ（`AUDIT#<yyyymm>`）と CloudTrail に残す
 - 本番操作時は確認プロンプトを出す

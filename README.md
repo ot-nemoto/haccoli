@@ -135,6 +135,7 @@ npm run admin -- --help
 | `attempt:list [--status]`                                      | 受験の一覧（期限切れはバッチ前でも `EXPIRED` と表示）                         |
 | `attempt:assign --attempt --grader <email...>`                 | 採点者を割り当て（複数可。EXPIRED / CANCELED は不可。割り当ての解除は未対応） |
 | `result:export --exam [--out results.csv]`                     | 採点結果を CSV 出力（受験 × 採点者ごとに 1 行。候補者の個人情報を含む）       |
+| `user:purge --email` | 候補者の個人データを削除（Cognito・DynamoDB・S3 の全バージョン）。採点が終わっていない受験があると拒否。dev でも確認あり。元に戻せない |
 | `web:config`                                                   | ローカル開発用の SPA 設定を生成                                               |
 
 prod に対する変更操作は確認プロンプトが出る（`-y` で省略）。

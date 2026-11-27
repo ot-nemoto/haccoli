@@ -1,6 +1,7 @@
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { CognitoIdentityProviderClient } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { UserDeps } from "@haccoli/core";
 
@@ -11,6 +12,7 @@ export interface StackOutputs {
   UserPoolClientId: string;
   TableName: string;
   WebUrl: string;
+  SubmissionsBucket: string;
 }
 
 export interface Context {
@@ -18,6 +20,7 @@ export interface Context {
   region: string;
   outputs: StackOutputs;
   deps: UserDeps;
+  s3: S3Client;
 }
 
 /**
@@ -37,7 +40,13 @@ export async function createContext(env: string): Promise<Context> {
   const raw = Object.fromEntries(
     (res.Stacks?.[0]?.Outputs ?? []).map((o) => [o.OutputKey ?? "", o.OutputValue ?? ""]),
   );
-  for (const key of ["UserPoolId", "UserPoolClientId", "TableName", "WebUrl"] as const) {
+  for (const key of [
+    "UserPoolId",
+    "UserPoolClientId",
+    "TableName",
+    "WebUrl",
+    "SubmissionsBucket",
+  ] as const) {
     if (!raw[key]) throw new Error(`スタック ${stackName} に出力 ${key} がありません`);
   }
   const outputs = raw as unknown as StackOutputs;
@@ -52,5 +61,6 @@ export async function createContext(env: string): Promise<Context> {
       userPoolId: outputs.UserPoolId,
       tableName: outputs.TableName,
     },
+    s3: new S3Client({ region }),
   };
 }
