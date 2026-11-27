@@ -1,4 +1,5 @@
 import {
+  AdminAddUserToGroupCommand,
   AdminDisableUserCommand,
   AdminRemoveUserFromGroupCommand,
   CognitoIdentityProviderClient,
@@ -17,7 +18,7 @@ import {
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it } from "vitest";
 import { StateError, ValidationError } from "./errors.js";
-import { disableUser, removeRole } from "./users.js";
+import { disableUser, removeRole, setStaffRoles } from "./users.js";
 
 /**
  * 管理者（画面）による admin の削除・無効化の保護（docs/design.md §14.1）。
@@ -31,7 +32,8 @@ const cognitoMock = mockClient(CognitoIdentityProviderClient);
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "ap-northeast-1" }));
 const ddbMock = mockClient(ddb);
 
-type Item = Record<string, unknown> & { sub: string; roles: string[]; disabled: boolean };
+/** roles がないのは移行前のアイテム（role のみ） */
+type Item = Record<string, unknown> & { sub: string; roles?: string[]; disabled: boolean };
 let store: Map<string, Item>;
 /** 業務テーブルへの書き込み（トランザクション）の入力 */
 let transactions: TransactWriteCommandInput[];
@@ -54,7 +56,8 @@ const user = (sub: string, roles: string[], extra: Partial<Item> = {}): Item => 
 
 const subOf = (key: unknown) => String((key as { PK: string }).PK).replace("USER#", "");
 
-const activeAdmin = (i: Item | undefined) => !!i && i.roles.includes("admin") && !i.disabled;
+const hasAdmin = (i: Item) => !!i.roles?.includes("admin") || i.role === "admin";
+const activeAdmin = (i: Item | undefined) => !!i && hasAdmin(i) && !i.disabled;
 
 /** 使う条件式だけを評価する */
 function holds(
@@ -69,7 +72,7 @@ function holds(
       return !!item;
     case "#rs = :prev":
       return !!item && JSON.stringify(item.roles) === JSON.stringify(values[":prev"]);
-    case "contains(#rs, :admin) AND (attribute_not_exists(#d) OR #d = :false)":
+    case "(contains(#rs, :admin) OR #r = :admin) AND (attribute_not_exists(#d) OR #d = :false)":
       return activeAdmin(item);
     default:
       throw new Error(`未対応の条件式: ${expr}`);
@@ -126,6 +129,7 @@ beforeEach(() => {
   gate = { expected: 0, waiting: [] };
 
   cognitoMock.on(AdminRemoveUserFromGroupCommand).resolves({});
+  cognitoMock.on(AdminAddUserToGroupCommand).resolves({});
   cognitoMock.on(AdminDisableUserCommand).resolves({});
   ddbMock.on(GetCommand).callsFake((i) => {
     const item = store.get(subOf(i.Key));
@@ -136,7 +140,7 @@ beforeEach(() => {
     return { Items: [...store.values()].filter((u) => u.email === email).map((u) => ({ ...u })) };
   });
   ddbMock.on(ScanCommand).callsFake(() => ({
-    Items: [...store.values()].filter((u) => u.roles.includes("admin")).map((u) => ({ ...u })),
+    Items: [...store.values()].filter(hasAdmin).map((u) => ({ ...u })),
   }));
   // 監査ログの記録は数えない
   ddbMock.on(PutCommand, { TableName: "audit" }).resolves({});
@@ -195,7 +199,9 @@ describe("最後の管理者の保護（トランザクション）", () => {
     expect(check?.ConditionCheck).toMatchObject({
       TableName: "t",
       Key: { PK: "USER#a", SK: "PROFILE" },
-      ConditionExpression: "contains(#rs, :admin) AND (attribute_not_exists(#d) OR #d = :false)",
+      ConditionExpression:
+        "(contains(#rs, :admin) OR #r = :admin) AND (attribute_not_exists(#d) OR #d = :false)",
+      ExpressionAttributeNames: { "#rs": "roles", "#r": "role", "#d": "disabled" },
     });
     expect(store.get("b")?.roles).toEqual(["grader"]);
     // DynamoDB を変えてから Cognito のグループを外す
@@ -307,6 +313,34 @@ describe("最後の管理者の保護（トランザクション）", () => {
     );
   });
 
+  it("移行前の管理者（role のみ）も、ほかの有効な管理者として確かめられる", async () => {
+    const legacy = user("b", []);
+    delete legacy.roles;
+    seed(user("a", ["admin"]), { ...legacy, role: "admin" }, user("c", ["grader", "admin"]));
+    // a は一覧を読んだ時点でもう管理者ではない。確かめられるのは移行前の b だけ
+    ddbMock.on(ScanCommand).callsFake(() => {
+      const items = [...store.values()].filter(hasAdmin).map((u) => ({ ...u }));
+      const a = store.get("a");
+      if (a) a.roles = ["grader"];
+      return { Items: items };
+    });
+    await removeRole(asAdmin("a"), { sub: "c", role: "admin" });
+    expect(store.get("c")?.roles).toEqual(["grader"]);
+  });
+
+  it("スロットリングなど想定外の取り消しの理由は、そのまま投げる（隠さない）", async () => {
+    seed(user("a", ["admin"]), user("b", ["admin"]));
+    ddbMock.on(TransactWriteCommand).callsFake(() => {
+      throw Object.assign(new Error("x"), {
+        name: "TransactionCanceledException",
+        CancellationReasons: [{ Code: "ThrottlingError" }, { Code: "None" }],
+      });
+    });
+    const err = await disableUser(asAdmin("a"), { sub: "b" }).catch((e) => e);
+    expect(err).not.toBeInstanceOf(StateError);
+    expect(err.name).toBe("TransactionCanceledException");
+  });
+
   it("同時に実行された操作と重なったら、やり直しを求める", async () => {
     seed(user("a", ["admin"]), user("b", ["admin"]));
     ddbMock.on(TransactWriteCommand).callsFake(() => {
@@ -365,5 +399,53 @@ describe("disableUser", () => {
     cognitoMock.on(AdminDisableUserCommand).resolves({});
     await disableUser(asIam, { email: "g@example.com" });
     expect(cognitoMock.commandCalls(AdminDisableUserCommand)).toHaveLength(2);
+  });
+});
+
+describe("setStaffRoles", () => {
+  it("付与を先に、削除を後に行う（grader → admin）", async () => {
+    seed(user("a", ["admin"]), user("g", ["grader"]));
+    const u = await setStaffRoles(asAdmin("a"), { sub: "g", roles: ["admin"] });
+    expect(u.roles).toEqual(["admin"]);
+    const groups = cognitoMock
+      .calls()
+      .map(
+        (c) =>
+          `${c.args[0].constructor.name}:${(c.args[0].input as { GroupName?: string }).GroupName}`,
+      );
+    expect(groups).toEqual([
+      "AdminAddUserToGroupCommand:admin",
+      "AdminRemoveUserFromGroupCommand:grader",
+    ]);
+  });
+
+  it("自分自身の admin を外す指定は、付与する前に拒否する（付与だけが残らない）", async () => {
+    seed(user("a", ["admin"]), user("b", ["admin"]));
+    await expect(setStaffRoles(asAdmin("a"), { sub: "a", roles: ["grader"] })).rejects.toThrow(
+      "自分自身",
+    );
+    expect(store.get("a")?.roles).toEqual(["admin"]);
+    expect(cognitoMock.calls()).toHaveLength(0);
+    expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
+  });
+
+  it("最後の管理者の admin を外す指定は、付与する前に拒否する", async () => {
+    seed(user("b", ["admin"]));
+    await expect(setStaffRoles(asAdmin("a"), { sub: "b", roles: ["grader"] })).rejects.toThrow(
+      "最後の 1 人",
+    );
+    expect(store.get("b")?.roles).toEqual(["admin"]);
+    expect(cognitoMock.calls()).toHaveLength(0);
+  });
+
+  it("候補者のロールは変えられない。無効化された人には付与できない", async () => {
+    seed(user("a", ["admin"]), user("c", ["candidate"]), user("d", ["grader"], { disabled: true }));
+    await expect(setStaffRoles(asAdmin("a"), { sub: "c", roles: ["grader"] })).rejects.toThrow(
+      "候補者",
+    );
+    await expect(setStaffRoles(asAdmin("a"), { sub: "d", roles: ["admin"] })).rejects.toThrow(
+      "無効化",
+    );
+    expect(cognitoMock.calls()).toHaveLength(0);
   });
 });

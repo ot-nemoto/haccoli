@@ -417,6 +417,41 @@ export async function removeRole(
 }
 
 /**
+ * 採点者・管理者のロールを、指定した組み合わせにする（管理者 API の PUT /admin/users/{sub}/roles）。
+ * 付与を先に、削除を後に行う（例: grader → admin でも、最後のロールを外す途中の状態にならない）。
+ * 付与・削除はそれぞれ監査ログに記録する。
+ *
+ * 管理者（画面）が admin を外す場合は、付与の前に自分自身・最後の管理者のチェックを済ませる。
+ * 削除で拒否されるのに付与だけが残る、ということを避けるため（削除の時点の確認は removeRole が
+ * トランザクションで行う）。
+ */
+export async function setStaffRoles(
+  deps: AuditedUserDeps,
+  input: { sub: string; roles: Exclude<Role, "candidate">[] },
+): Promise<UserProfile> {
+  const user = await resolveUser(deps, { sub: input.sub });
+  if (user.roles.includes("candidate")) {
+    throw new ValidationError("候補者のロールは変更できません");
+  }
+  const wanted = sortRoles(input.roles);
+  const problem = rolesProblem(wanted);
+  if (problem) throw new ValidationError(problem);
+  const adds = wanted.filter((r) => !user.roles.includes(r));
+  const removes = user.roles.filter((r) => !wanted.includes(r));
+  if (adds.length > 0 && user.disabled) {
+    throw new ValidationError(`無効化された利用者です: ${user.email}`);
+  }
+  if (removes.includes("admin") && deps.actor.type === "admin") {
+    await adminRemovalGuard(deps, user, deps.actor.sub, "role");
+  }
+
+  let current = user;
+  for (const role of adds) current = await addRole(deps, { sub: user.sub, role });
+  for (const role of removes) current = await removeRole(deps, { sub: user.sub, role });
+  return current;
+}
+
+/**
  * DynamoDB のロールが変わったか。付与済み・削除済みでも Cognito のグループはそろえるため記録は残すが、
  * 実際の変更と区別できるようにする
  */
@@ -474,10 +509,14 @@ const lastAdmin = () =>
     "有効な管理者が最後の 1 人のため、管理者の権限を外す・無効化することはできません",
   );
 
-/** 有効な管理者であることの条件（最後の管理者の保護で、ほかの管理者に使う） */
+/**
+ * 有効な管理者であることの条件（最後の管理者の保護で、ほかの管理者に使う）。
+ * 一覧（listUsers）と同じく、移行前のアイテム（role のみ）も管理者として認める
+ */
 const ACTIVE_ADMIN = {
-  ConditionExpression: "contains(#rs, :admin) AND (attribute_not_exists(#d) OR #d = :false)",
-  ExpressionAttributeNames: { "#rs": "roles", "#d": "disabled" },
+  ConditionExpression:
+    "(contains(#rs, :admin) OR #r = :admin) AND (attribute_not_exists(#d) OR #d = :false)",
+  ExpressionAttributeNames: { "#rs": "roles", "#r": "role", "#d": "disabled" },
   ExpressionAttributeValues: { ":admin": "admin", ":false": false },
 };
 
@@ -531,8 +570,12 @@ async function guardedUpdate(
       }
       // 確かめた管理者が、外された・無効化された。次の管理者で試す
       if (codes[1] === "ConditionalCheckFailed") continue;
-      // 同時に実行された操作と重なった（TransactionConflict）
-      throw new StateError("INVALID", "他の操作と重なりました。もう一度実行してください");
+      // 同時に実行された操作と重なった
+      if (codes.includes("TransactionConflict")) {
+        throw new StateError("INVALID", "他の操作と重なりました。もう一度実行してください");
+      }
+      // スロットリングなど想定外の理由は隠さない（API では 500 にし、アラームで気づけるようにする）
+      throw e;
     }
   }
   throw lastAdmin();

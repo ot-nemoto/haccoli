@@ -312,16 +312,21 @@ describe("PUT /api/admin/users/:sub/roles", () => {
   });
 
   it("自分自身の admin は外せない・最後の管理者は外せない・候補者は変えられない", async () => {
-    users.set("sub-a", profile("sub-a", ["grader", "admin"]));
+    // 自分（admin のみ）を grader にする指定：拒否し、grader の付与も残さない
     const mine = await admin("PUT", "/api/admin/users/sub-a/roles", { roles: ["grader"] });
     expect(mine.status).toBe(400);
+    expect(cognitoMock.commandCalls(AdminAddUserToGroupCommand)).toHaveLength(0);
+    expect(auditPuts()).toHaveLength(0);
 
-    users.delete("sub-a");
-    users.set("sub-a", profile("sub-a", ["admin"]));
     // sub-a（実行者）が一覧に出ない状況：sub-b が最後の有効な管理者
     ddbMock.on(ScanCommand).resolves({ Items: [profile("sub-b", ["grader", "admin"])] });
     const last = await admin("PUT", "/api/admin/users/sub-b/roles", { roles: ["grader"] });
     expect(last.status).toBe(409);
+    // grader → admin に変える指定でも、最後の管理者の admin を外すなら付与の前に拒否する
+    users.set("sub-b", profile("sub-b", ["admin"]));
+    const swap = await admin("PUT", "/api/admin/users/sub-b/roles", { roles: ["grader"] });
+    expect(swap.status).toBe(409);
+    expect(cognitoMock.commandCalls(AdminAddUserToGroupCommand)).toHaveLength(0);
 
     const cand = await admin("PUT", "/api/admin/users/sub-c/roles", { roles: ["grader"] });
     expect(cand.status).toBe(400);

@@ -1,15 +1,13 @@
 import {
   type AuditedUserDeps,
-  addRole,
   auditMonth,
   disableUser,
-  getUserBySub,
   isAuditAction,
   isRole,
   listAuditLogPage,
   listUserPage,
   registerUser,
-  removeRole,
+  setStaffRoles,
   type UserProfile,
 } from "@haccoli/core";
 import type { AdminAuditPage, AdminUser, AdminUserPage } from "@haccoli/shared";
@@ -17,7 +15,7 @@ import { adminCreateUserRequestSchema, adminSetRolesRequestSchema } from "@hacco
 import { type Context, Hono } from "hono";
 import type { AppEnv } from "./auth.js";
 import type { AdminApiDeps } from "./deps.js";
-import { ApiError, invalidRequest, notFound } from "./errors.js";
+import { invalidRequest } from "./errors.js";
 
 /**
  * 管理者 API（docs/design.md §14.6）。/api/admin/* に requireRole("admin") 済みでマウントする。
@@ -54,33 +52,14 @@ export function adminRoutes(deps: AdminApiDeps) {
   });
 
   /**
-   * 採点者・管理者のロールを、指定した組み合わせにする。付与を先に、削除を後に行う
-   * （例: grader → admin でも最後のロールを外す途中の状態にならない）。
-   * 付与・削除はそれぞれ監査ログに記録する。途中で失敗しても、もう一度同じ指定で直る。
+   * 採点者・管理者のロールを、指定した組み合わせにする。付与を先に、削除を後に行い、
+   * それぞれ監査ログに記録する。admin を外すときの保護は、付与の前に確かめる（core の setStaffRoles）
    */
   app.put("/users/:sub/roles", async (c) => {
     const body = adminSetRolesRequestSchema.safeParse(await c.req.json().catch(() => undefined));
     if (!body.success) throw invalidRequest(body.error);
-    const sub = c.req.param("sub");
-    const user = await getUserBySub(deps, sub);
-    if (!user) throw notFound();
-    if (user.roles.includes("candidate")) {
-      throw new ApiError(400, "VALIDATION", "候補者のロールは変更できません");
-    }
-    const wanted = new Set(body.data.roles);
-    if (wanted.size !== body.data.roles.length) throw invalidRequest();
-
-    const actorDeps = as(c);
-    let current: UserProfile = user;
-    for (const role of wanted) {
-      if (!current.roles.includes(role)) current = await addRole(actorDeps, { sub, role });
-    }
-    for (const role of user.roles) {
-      if (!wanted.has(role as "grader" | "admin")) {
-        current = await removeRole(actorDeps, { sub, role });
-      }
-    }
-    return c.json<AdminUser>(toAdminUser(current));
+    const user = await setStaffRoles(as(c), { sub: c.req.param("sub"), roles: body.data.roles });
+    return c.json<AdminUser>(toAdminUser(user));
   });
 
   app.post("/users/:sub/disable", async (c) => {
