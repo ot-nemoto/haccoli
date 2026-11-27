@@ -568,7 +568,8 @@ function toItem(a: AttemptRecord): Record<string, unknown> {
   };
 }
 
-function toAttempt(item: Record<string, unknown>): AttemptRecord {
+/** @internal */
+export function toAttempt(item: Record<string, unknown>): AttemptRecord {
   return {
     attemptId: String(item.attemptId),
     candidateSub: String(item.candidateSub),
