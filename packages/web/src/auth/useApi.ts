@@ -17,7 +17,7 @@ export function useApi() {
   return useCallback(
     async <T>(path: string, init?: RequestInit): Promise<T> => {
       const toLogin = async () => {
-        const login = session ? ROLE_ROUTES[session.user.role].login : "/login";
+        const login = session ? ROLE_ROUTES[session.role].login : "/login";
         await signOut();
         navigate(login, {
           replace: true,

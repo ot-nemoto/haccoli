@@ -17,7 +17,7 @@ describe("parseGroups", () => {
 });
 
 describe("ensureOwned", () => {
-  const user = { sub: "me", name: "x", role: "candidate" as const };
+  const user = { sub: "me", name: "x", roles: ["candidate" as const] };
 
   it("所有者なら通す", () => {
     expect(() => ensureOwned("me", user)).not.toThrow();

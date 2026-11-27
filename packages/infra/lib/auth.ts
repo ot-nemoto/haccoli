@@ -2,7 +2,7 @@ import { aws_cognito as cognito, Duration, Stack } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { EnvConfig } from "./config.js";
 
-export const USER_GROUPS = ["candidate", "grader"] as const;
+export const USER_GROUPS = ["candidate", "grader", "admin"] as const;
 
 /**
  * Cognito User Pool（Email OTP によるパスワードレス認証）。docs/design.md §4

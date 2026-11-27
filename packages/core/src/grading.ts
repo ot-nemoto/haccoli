@@ -44,7 +44,8 @@ export async function assignGraders(
   for (const email of input.graderEmails) {
     const user = await findUserByEmail(deps, email);
     if (!user) throw new NotFoundError(`登録されていないメールアドレスです: ${email}`);
-    if (user.role !== "grader") throw new ValidationError(`採点者ではありません: ${user.email}`);
+    if (!user.roles.includes("grader"))
+      throw new ValidationError(`採点者ではありません: ${user.email}`);
     if (user.disabled) throw new ValidationError(`無効化された採点者です: ${user.email}`);
     if (!graders.some((g) => g.sub === user.sub)) graders.push(user);
   }
