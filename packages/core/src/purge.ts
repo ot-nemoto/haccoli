@@ -56,7 +56,7 @@ export async function planPurge(
   now: Date = deps.now?.() ?? new Date(),
 ): Promise<PurgePlan> {
   const user = await findUserByEmail(deps, email);
-  if (!user) throw new UserNotFoundError(email);
+  if (!user) throw new UserNotFoundError({ email });
   if (!user.roles.includes("candidate")) {
     throw new ValidationError(
       `候補者ではありません（${user.roles.join(", ")}）。採点者・管理者は無効化してください`,

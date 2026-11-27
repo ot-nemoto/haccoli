@@ -21,12 +21,15 @@ import {
   textAnswerSchema,
 } from "@haccoli/shared/schemas";
 import { type AuditDeps, auditPut } from "./audit.js";
+import { isConditionFailure, transactionFailureCodes } from "./ddb-errors.js";
 import { validateDeadlineDate } from "./deadline.js";
 import { NotFoundError, StateError, ValidationError, VersionConflictError } from "./errors.js";
 import { type DataDeps, getExamSummary, getExamVersion } from "./exams.js";
 import { assertZipFileName, type FileStore, newFileKey, verifyUploadedFile } from "./files.js";
 import { GSI1, GSI2, keys } from "./keys.js";
 import { findUserByEmail } from "./users.js";
+
+export { isConditionFailure, transactionFailureCodes };
 
 /** 受験（docs/design.md §6.1 Attempt） */
 export interface AttemptRecord {
@@ -562,18 +565,6 @@ function explainStateFailure(
     default:
       return new StateError("INVALID", "現在の状態ではこの操作はできません");
   }
-}
-
-/** @internal */
-export function isConditionFailure(e: unknown): boolean {
-  return e instanceof Error && e.name === "ConditionalCheckFailedException";
-}
-
-/** @internal */
-export function transactionFailureCodes(e: unknown): (string | undefined)[] | undefined {
-  if (!(e instanceof Error) || e.name !== "TransactionCanceledException") return undefined;
-  const reasons = (e as { CancellationReasons?: { Code?: string }[] }).CancellationReasons;
-  return reasons?.map((r) => r.Code);
 }
 
 function toItem(a: AttemptRecord): Record<string, unknown> {

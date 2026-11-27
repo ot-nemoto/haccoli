@@ -255,25 +255,7 @@ describe("removeRole", () => {
       expect(ddbMock.commandCalls(PutCommand)).toHaveLength(0);
     });
 
-    it("有効な管理者が最後の 1 人なら外せない（無効化された管理者は数えない）", async () => {
-      withUser(item("b", ["grader", "admin"]));
-      ddbMock.on(ScanCommand).resolves({
-        Items: [item("b", ["grader", "admin"]), item("c", ["admin"], { disabled: true })],
-      });
-      await expect(
-        removeRole(asAdmin("a"), { email: "b@example.com", role: "admin" }),
-      ).rejects.toThrow("最後の管理者");
-      expect(calls).toEqual([]);
-    });
-
-    it("ほかに有効な管理者がいれば外せる", async () => {
-      withUser(item("b", ["grader", "admin"]));
-      ddbMock.on(ScanCommand).resolves({
-        Items: [item("a", ["admin"]), item("b", ["grader", "admin"])],
-      });
-      await removeRole(asAdmin("a"), { email: "b@example.com", role: "admin" });
-      expect(calls).toEqual(["ddb:update", "cognito:remove:admin"]);
-    });
+    // 最後の管理者の保護（トランザクション）は admin-guard.test.ts
   });
 
   it("スーパー管理者（CLI）は最後の管理者でも外せる", async () => {
