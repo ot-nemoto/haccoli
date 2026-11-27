@@ -16,6 +16,7 @@
 - 管理 CLI はリポジトリのルートで実行します。`npm ci` を済ませておきます。
 - AWS の認証情報は、AWS SDK の通常の解決順（`AWS_PROFILE`・SSO・環境変数）で読み込まれます。対象環境のアカウントにログインしてから実行します。
 - 以下では環境を `<env>`（`dev` または `prod`）と書きます。
+- リージョンは既定で `ap-northeast-1` です。変える場合は、CLI の実行時にも `HACCOLI_REGION` を設定します。
 
 ```bash
 npm run admin -- -e <env> <command> [options]
@@ -80,7 +81,9 @@ npm run admin -- -e <env> grader:disable    --email grader@example.com
 ```
 
 - 有効に戻すコマンドはありません。
-- 無効化した採点者には、新しく割り当てられません。割り当て済みの採点が残っている場合は、別の採点者を割り当てます。
+- 無効化した採点者には、新しく割り当てられません。
+- **採点者を無効化する前に、割り当て済みの採点がすべて確定していることを確かめます。** 受験が採点済み（`GRADED`）になるのは、割り当てた採点者の全員が確定したときです。割り当ての解除はできないため、未確定のまま無効化すると、別の採点者を追加しても受験は採点中（`GRADING`）のまま進みません。個人データの削除（2.8）もできなくなります。
+- 未確定のまま無効化してしまった場合は、その採点者を一時的に有効に戻し（5 章）、確定してもらってから無効化し直します。
 
 ### 2.2 課題を投入する
 
@@ -114,7 +117,7 @@ npm run admin -- -e <env> attempt:issue --email cand@example.com --exam <examId>
 ### 2.4 期限を延長する
 
 ```bash
-npm run admin -- -e <env> attempt:list --status IN_PROGRESS   # 受験 ID を調べる
+npm run admin -- -e <env> attempt:list --status EXPIRED   # 受験 ID を調べる（期限前なら --status を付けずに探す）
 npm run admin -- -e <env> attempt:extend --attempt <attemptId> --deadline 2027-01-10
 ```
 
@@ -145,7 +148,7 @@ npm run admin -- -e <env> attempt:assign --attempt <attemptId> --grader grader1@
 - `EXPIRED`・`CANCELED` の受験には割り当てられません。
 - 採点者の画面に表示されるのは、提出済みの受験だけです。
 - 採点済み（`GRADED`）の受験に採点者を追加すると、採点中（`GRADING`）に戻ります。
-- 割り当ての解除には対応していません。
+- 割り当ての解除には対応していません。割り当てた採点者は全員が確定する必要があるため、割り当てる前に採点者の都合を確かめます。
 
 #### 進み具合を確かめる
 
@@ -232,11 +235,11 @@ API の 1 回の失敗で、2 つのアラームが同時に鳴ることがあ�
 
 3. 原因に応じて対応します。
 
-   | 原因の例                                         | 対応                                                            |
-   | ------------------------------------------------ | --------------------------------------------------------------- |
-   | 直前のデプロイで入った不具合                     | `main` を前のコミットに戻す PR を作り、マージして再デプロイする |
-   | DynamoDB・S3・Cognito のスロットリングや一時障害 | AWS Health Dashboard を確かめる。一時的なものなら復旧を待つ     |
-   | 特定のデータでだけ失敗する                       | 該当の受験 ID を控え、Issue（label `fix`）を作って調べる        |
+   | 原因の例                                         | 対応                                                                                                                                                                                  |
+   | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | 直前のデプロイで入った不具合                     | `develop` で該当のコミットを revert する PR を作ってマージし、`develop` → `main` の PR で prod に反映する（4.5）。急ぐ場合も `main` だけを戻さず、同じ revert を `develop` にも入れる |
+   | DynamoDB・S3・Cognito のスロットリングや一時障害 | AWS Health Dashboard を確かめる。一時的なものなら復旧を待つ                                                                                                                           |
+   | 特定のデータでだけ失敗する                       | 該当の受験 ID を控え、Issue（label `fix`）を作って調べる                                                                                                                              |
 
 4. 候補者が提出できなかった場合は、復旧後に期限を延長して連絡します。
 
@@ -256,7 +259,8 @@ API の 1 回の失敗で、2 つのアラームが同時に鳴ることがあ�
    aws sesv2 list-suppressed-destinations --reasons BOUNCE
    ```
 
-3. 登録ミスのアドレスであれば、その候補者を無効化（2.1）し、正しいアドレスで登録し直して受験を発行し直します。
+3. 登録ミスのアドレスであれば、誤ったアドレスの受験を取り消し（2.5）、その候補者の個人データを削除します（2.8）。そのうえで、正しいアドレスで登録し直して受験を発行し直します。
+   - 無効化だけでは、発行済みの受験が未着手のまま残ります。
 4. バウンス率は過去の送信をもとに算出されるため、下がるまでに時間がかかります。新しい登録で同じ誤りを繰り返さないようにします。
 5. 審査（`PROBATION`）や停止（`SHUTDOWN`）になった場合は、SES コンソールの「評価ダッシュボード」から原因と対策を AWS に連絡します。
 
@@ -336,7 +340,7 @@ prod は dev とは別の AWS アカウントに作ります。初回に 1 回�
 
 ```bash
 npm ci
-npm run cdk -- bootstrap aws://<PROD_ACCOUNT_ID>/ap-northeast-1
+npm run cdk -- bootstrap aws://<PROD_ACCOUNT_ID>/ap-northeast-1   # 別のリージョンにする場合は、そのリージョンを指定し HACCOLI_REGION も設定する
 npm run cdk -- deploy Haccoli-ci-prod -c env=prod -c ci=true
 # 出力 DeployRoleArn を控える
 ```
@@ -345,14 +349,15 @@ npm run cdk -- deploy Haccoli-ci-prod -c env=prod -c ci=true
 
 リポジトリの Settings → Environments に `prod` を作り、次を設定します。
 
-| 種別                | 名前                          | 値                                                                         |
-| ------------------- | ----------------------------- | -------------------------------------------------------------------------- |
-| Variable            | `AWS_ROLE_ARN`                | 4.3 の `DeployRoleArn`                                                     |
-| Variable            | `HACCOLI_FROM_EMAIL`          | 送信元アドレス（4.1 のドメイン配下。例: `no-reply@recruit.example.co.jp`） |
-| Variable            | `HACCOLI_SES_VERIFIED_DOMAIN` | 4.1 のドメイン（#15 で追加）                                               |
-| Variable            | `HACCOLI_ALARM_EMAIL`         | アラームの通知先                                                           |
-| Deployment branches | —                             | `main` のみ                                                                |
-| Required reviewers  | —                             | 管理者を設定する                                                           |
+| 種別                | 名前                          | 値                                                                                             |
+| ------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| Variable            | `AWS_ROLE_ARN`                | 4.3 の `DeployRoleArn`                                                                         |
+| Variable            | `HACCOLI_FROM_EMAIL`          | 送信元アドレス（4.1 のドメイン配下。例: `no-reply@recruit.example.co.jp`）                     |
+| Variable            | `HACCOLI_SES_VERIFIED_DOMAIN` | 4.1 のドメイン。**#15 のマージ後に設定する**（それまでは deploy.yml が読まないため効果がない） |
+| Variable            | `HACCOLI_ALARM_EMAIL`         | アラームの通知先                                                                               |
+| Variable（任意）    | `HACCOLI_REGION`              | 既定 `ap-northeast-1`。変える場合は 4.3 のブートストラップも同じリージョンで行う               |
+| Deployment branches | —                             | `main` のみ                                                                                    |
+| Required reviewers  | —                             | 管理者を設定する                                                                               |
 
 ### 4.5 デプロイする
 
@@ -402,5 +407,5 @@ npm run cdk -- deploy Haccoli-ci-prod -c env=prod -c ci=true
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `candidate:import`（CSV 一括登録） | `candidate:add` を 1 人ずつ実行する                                                                                                                                                        |
 | CLI の監査ログ（DynamoDB）         | Cognito の操作（登録・無効化・削除）は CloudTrail のイベント履歴（90 日）に残る。DynamoDB・S3 のデータ操作は既定では残らないため、受験の発行・取消・個人データの削除などは社内の台帳に残す |
-| 採点者の割り当ての解除             | 別の採点者を追加で割り当てる                                                                                                                                                               |
+| 採点者の割り当ての解除             | 解除できない。割り当てた採点者に確定してもらう。採点者を無効化した後なら、一時的に有効に戻して確定してもらう（2.1）                                                                        |
 | 無効化したユーザーを有効に戻す     | 有効に戻す必要がある場合は、AWS コンソールの Cognito でユーザーを有効化し、DynamoDB のプロフィールの `disabled` を `false` に戻す                                                          |
