@@ -3,6 +3,7 @@
 候補者がメールアドレス + ワンタイムパスコードでログインして採用課題に回答し、採点者が採点するシステム（AWS サーバーレス）。
 
 - 設計書: [docs/design.md](docs/design.md)
+- 運用手順書: [docs/runbook.md](docs/runbook.md)（日々の運用・アラーム対応・prod の構築）
 
 ## 構成
 

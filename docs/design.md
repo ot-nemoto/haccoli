@@ -1,6 +1,6 @@
 # 採用課題試験管理システム 設計書（MVP）
 
-- ステータス: Draft v0.4
+- ステータス: Draft v0.5
 - 対象: MVP（最小構成）
 - 前提スタック: TypeScript / Node.js（devcontainer: `typescript-node:24`）、AWS
 
@@ -12,6 +12,7 @@
 | v0.2 | 未決事項への回答を反映：受験期限（日数指定）、回答形式（記述/選択/コード・ファイル・GitHub URL）、複数採点者、採点者への氏名表示（メール非表示）、管理操作の CLI 化                      |
 | v0.3 | 受験期限を **日付指定** に変更、期限切れは **未提出（EXPIRED）** 扱い、コード提出を **zip アップロードのみ** に限定（エディタ入力・GitHub URL は対象外へ）、提出ファイル上限 20MB で確定 |
 | v0.4 | 監視を **最小構成**（API エラー、SES バウンス率・苦情率）に絞り、prod のみ設定。概算コストを内訳付きで更新                                                                               |
+| v0.5 | `candidate:import` と CLI の監査ログを後続フェーズへ。運用手順書（[runbook.md](runbook.md)）を追加                                                                                       |
 
 ---
 
@@ -42,6 +43,7 @@
 - コードのブラウザ内エディタ入力、GitHub URL による提出（MVP のソースコード提出は zip のみ）
 - 提出コードの実行・自動テスト、マルウェアスキャン
 - 期限処理バッチ失敗のアラーム（期限判定は書き込み時の条件チェックで担保されるため、バッチ失敗は表示上のステータスずれに留まる）
+- 管理 CLI の `candidate:import`（CSV 一括登録）と監査ログ（§8）。MVP では `candidate:add` を 1 人ずつ実行し、重要な操作は社内の台帳に残す
 
 ---
 
@@ -346,7 +348,7 @@ stateDiagram-v2
 | コマンド                                             | 内容                                                                                    |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `candidate:add --email --name`                       | 候補者登録（Cognito ユーザー作成 + グループ + User 保存）                               |
-| `candidate:import --csv`                             | CSV 一括登録                                                                            |
+| `candidate:import --csv`                             | CSV 一括登録（**後続フェーズ**）                                                        |
 | `candidate:disable --email`                          | 無効化                                                                                  |
 | `grader:add --email --name` / `grader:disable`       | 採点者登録・無効化                                                                      |
 | `exam:publish --dir exams/<examId>`                  | 課題定義の検証・投入（新しい版を作成）                                                  |
@@ -359,7 +361,7 @@ stateDiagram-v2
 | `result:export --exam [--out results.csv]`           | 採点結果の CSV 出力（採点者別の問題ごとの点数・コメント）                               |
 | `user:purge --email`                                 | 個人データ削除（Cognito・DynamoDB・S3）。候補者のみ・採点済みか取消・期限切れの受験のみ |
 
-- CLI の操作はすべて実行者（IAM プリンシパル）・内容を DynamoDB の監査ログ（`AUDIT#<yyyymm>`）と CloudTrail に残す
+- （**後続フェーズ**）CLI の操作はすべて実行者（IAM プリンシパル）・内容を DynamoDB の監査ログ（`AUDIT#<yyyymm>`）に残す。MVP では Cognito の操作のみ CloudTrail に残り、DynamoDB・S3 のデータ操作は残らないため、運用で台帳に記録する（[runbook.md](runbook.md) 5 章）
 - 本番操作時は確認プロンプトを出す
 
 ---
