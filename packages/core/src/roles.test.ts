@@ -7,6 +7,7 @@ import {
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
+  GetCommand,
   PutCommand,
   QueryCommand,
   ScanCommand,
@@ -62,7 +63,10 @@ beforeEach(() => {
   });
 });
 
-const withUser = (u: Record<string, unknown>) => ddbMock.on(QueryCommand).resolves({ Items: [u] });
+const withUser = (u: Record<string, unknown>) => {
+  ddbMock.on(QueryCommand).resolves({ Items: [u] });
+  ddbMock.on(GetCommand).resolves({ Item: u });
+};
 
 describe("rolesProblem / rolesOf", () => {
   it("ロールは 1 つ以上・重複なし・候補者は単独", () => {
@@ -120,9 +124,32 @@ describe("addRole", () => {
     expect(update?.UpdateExpression).toBe("SET #rs = :next REMOVE #r");
     expect(update?.ExpressionAttributeValues?.[":next"]).toEqual(["grader", "admin"]);
     // 読み込んだ後に他の操作で変わっていたら失敗させる（移行前のアイテムにも対応）
-    expect(update?.ConditionExpression).toBe(
-      "#rs = :prev OR (attribute_not_exists(#rs) AND #r = :single)",
-    );
+    // 読み込んだ後に他の操作で変わっていたら失敗させる（移行前のアイテムは role を条件にする）
+    expect(update?.ConditionExpression).toBe("attribute_not_exists(#rs) AND #r = :prev");
+    expect(update?.ExpressionAttributeValues?.[":prev"]).toBe("grader");
+  });
+
+  it("条件には保存されているままの roles（順序・未知の値を含む）を使う", async () => {
+    withUser(item("g", ["admin", "x-unknown", "grader"]));
+    await removeRole(deps, { email: "g@example.com", role: "admin" });
+    const update = ddbMock.commandCalls(UpdateCommand)[0]?.args[0].input;
+    expect(update?.ConditionExpression).toBe("#rs = :prev");
+    expect(update?.ExpressionAttributeValues?.[":prev"]).toEqual(["admin", "x-unknown", "grader"]);
+    expect(update?.ExpressionAttributeValues?.[":next"]).toEqual(["grader"]);
+  });
+
+  it("同時に付与されて DynamoDB に入っていれば、グループを外さずに成功とする", async () => {
+    withUser(item("g", ["grader"]));
+    ddbMock
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error("x"), { name: "ConditionalCheckFailedException" }));
+    ddbMock
+      .on(GetCommand)
+      .resolvesOnce({ Item: item("g", ["grader"]) })
+      .resolves({ Item: item("g", ["grader", "admin"]) });
+    const u = await addRole(deps, { email: "g@example.com", role: "admin" });
+    expect(u.roles).toEqual(["grader", "admin"]);
+    expect(calls).toEqual(["cognito:add:admin"]);
   });
 
   it("DynamoDB で失敗したら Cognito のグループを外して戻す", async () => {
@@ -136,10 +163,15 @@ describe("addRole", () => {
     expect(calls).toEqual(["cognito:add:admin", "cognito:remove:admin"]);
   });
 
-  it("付与済みなら何もしない。候補者には付与できない", async () => {
+  it("付与済みでもグループはそろえる（途中で失敗した後の再実行）。無効化された人・候補者には付与できない", async () => {
     withUser(item("g", ["grader", "admin"]));
     await addRole(deps, { email: "g@example.com", role: "admin" });
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(["cognito:add:admin"]);
+    calls = [];
+    withUser(item("d", ["grader"], { disabled: true }));
+    await expect(addRole(deps, { email: "d@example.com", role: "admin" })).rejects.toThrow(
+      "無効化",
+    );
     withUser(item("c", ["candidate"]));
     await expect(addRole(deps, { email: "c@example.com", role: "admin" })).rejects.toBeInstanceOf(
       ValidationError,
@@ -154,6 +186,12 @@ describe("removeRole", () => {
     const u = await removeRole(deps, { email: "g@example.com", role: "admin" });
     expect(u.roles).toEqual(["grader"]);
     expect(calls).toEqual(["ddb:update", "cognito:remove:admin"]);
+  });
+
+  it("DynamoDB から外れていてもグループは外す（途中で失敗した後の再実行）", async () => {
+    withUser(item("g", ["grader"]));
+    await removeRole(deps, { email: "g@example.com", role: "admin" });
+    expect(calls).toEqual(["cognito:remove:admin"]);
   });
 
   it("最後のロールは外せない", async () => {

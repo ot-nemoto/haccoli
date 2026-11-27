@@ -248,6 +248,7 @@ export interface RoleActor {
 /**
  * ロールを付与する（§14.3）。Cognito（グループ）→ DynamoDB の順に行い、DynamoDB で失敗したら Cognito を戻す。
  * どちらか片方だけ成功しても、API は両方にあるロールしか認めないため権限は残らない。
+ * 付与済みでもグループはそろえるので、途中で失敗した場合は再実行で直る。
  */
 export async function addRole(
   deps: UserDeps,
@@ -255,40 +256,32 @@ export async function addRole(
 ): Promise<UserProfile> {
   const user = await findUserByEmail(deps, input.email);
   if (!user) throw new UserNotFoundError(input.email);
-  if (user.roles.includes(input.role)) return user;
-  const next = sortRoles([...user.roles, input.role]);
-  const problem = rolesProblem(next);
-  if (problem) throw new ValidationError(problem);
+  if (user.disabled) throw new ValidationError(`無効化された利用者です: ${user.email}`);
+  const problem = rolesProblem(sortRoles([...user.roles, input.role]));
+  if (problem && !user.roles.includes(input.role)) throw new ValidationError(problem);
 
-  await deps.cognito.send(
-    new AdminAddUserToGroupCommand({
-      UserPoolId: deps.userPoolId,
-      Username: user.email,
-      GroupName: input.role,
-    }),
-  );
+  await groupCommand(deps, "add", user.email, input.role);
+  if (user.roles.includes(input.role)) return user;
   try {
-    await updateRoles(deps, user, next);
+    const roles = await updateRoles(deps, user.sub, (cur) => [...cur, input.role]);
+    return { ...user, roles };
   } catch (e) {
+    // 同時に付与されて DynamoDB に入っていれば成功とし、グループは外さない
+    const latest = await getUserBySub(deps, user.sub).catch(() => undefined);
+    if (latest?.roles.includes(input.role)) return latest;
     try {
-      await deps.cognito.send(
-        new AdminRemoveUserFromGroupCommand({
-          UserPoolId: deps.userPoolId,
-          Username: user.email,
-          GroupName: input.role,
-        }),
-      );
+      await groupCommand(deps, "remove", user.email, input.role);
     } catch {
       // 戻せなくても、DynamoDB の roles にないロールは API で認められない（元のエラーを優先する）
     }
     throw e;
   }
-  return { ...user, roles: next };
 }
 
 /**
  * ロールを外す（§14.3）。DynamoDB → Cognito の順に行う（DynamoDB を変えた時点で即時に無効になる）。
  * 最後のロールは外せない（利用を止めるときは無効化する）。
+ * DynamoDB から外れていてもグループは外すので、途中で失敗した場合は再実行で直る。
  */
 export async function removeRole(
   deps: UserDeps,
@@ -297,29 +290,46 @@ export async function removeRole(
 ): Promise<UserProfile> {
   const user = await findUserByEmail(deps, input.email);
   if (!user) throw new UserNotFoundError(input.email);
-  if (!user.roles.includes(input.role)) return user;
-  const next = user.roles.filter((r) => r !== input.role);
-  if (next.length === 0) {
-    throw new ValidationError("最後のロールは外せません。利用を止める場合は無効化してください");
+  if (!user.roles.includes(input.role)) {
+    await groupCommand(deps, "remove", user.email, input.role);
+    return user;
   }
+  if (user.roles.length === 1) throw lastRole();
   if (input.role === "admin" && actor.adminSub !== undefined) {
     await assertAdminRemovable(deps, user, actor.adminSub);
   }
 
-  await updateRoles(deps, user, next);
+  const roles = await updateRoles(deps, user.sub, (cur) => {
+    const next = cur.filter((r) => r !== input.role);
+    if (next.length === 0) throw lastRole();
+    return next;
+  });
+  await groupCommand(deps, "remove", user.email, input.role);
+  return { ...user, roles };
+}
+
+const lastRole = () =>
+  new ValidationError("最後のロールは外せません。利用を止める場合は無効化してください");
+
+async function groupCommand(
+  deps: UserDeps,
+  op: "add" | "remove",
+  email: string,
+  role: Role,
+): Promise<void> {
+  const input = { UserPoolId: deps.userPoolId, Username: email, GroupName: role };
   await deps.cognito.send(
-    new AdminRemoveUserFromGroupCommand({
-      UserPoolId: deps.userPoolId,
-      Username: user.email,
-      GroupName: input.role,
-    }),
+    op === "add"
+      ? new AdminAddUserToGroupCommand(input)
+      : new AdminRemoveUserFromGroupCommand(input),
   );
-  return { ...user, roles: next };
 }
 
 /**
  * 管理者（画面）による admin の削除・無効化の保護（§14.1）。
  * 自分自身は不可。有効な管理者が最後の 1 人なら不可（スーパー管理者は CLI で常に操作できる）。
+ * 数えてから更新するまでの間の同時実行は防げない。画面の API で使う前に（Step 7-3）、
+ * 確認と更新を 1 つのトランザクションにする。
  */
 export async function assertAdminRemovable(
   deps: Pick<UserDeps, "ddb" | "tableName">,
@@ -336,21 +346,38 @@ export async function assertAdminRemovable(
   }
 }
 
-/** 読み込んだ時点の roles から変わっていなければ更新する。移行前の role は削除する */
-async function updateRoles(deps: UserDeps, user: UserProfile, next: Role[]): Promise<void> {
-  const single = user.roles.length === 1 ? { ":single": user.roles[0] } : {};
+/**
+ * ロールを読み直して更新する。保存されているままの値（順序・未知の値を含む。移行前は role）を条件にし、
+ * 読んだ後に他の操作で変わっていたら失敗させる。移行前の role は削除する。
+ */
+async function updateRoles(
+  deps: UserDeps,
+  sub: string,
+  change: (current: Role[]) => Role[],
+): Promise<Role[]> {
+  const res = await deps.ddb.send(
+    new GetCommand({ TableName: deps.tableName, Key: keys.user(sub), ConsistentRead: true }),
+  );
+  if (!res.Item) throw new StateError("INVALID", "利用者が見つかりません");
+  const next = sortRoles([...new Set(change(rolesOf(res.Item)))]);
+  const problem = rolesProblem(next);
+  if (problem) throw new ValidationError(problem);
+
+  const stored = res.Item.roles;
+  const condition = Array.isArray(stored)
+    ? { expr: "#rs = :prev", values: { ":prev": stored } }
+    : res.Item.role !== undefined
+      ? { expr: "attribute_not_exists(#rs) AND #r = :prev", values: { ":prev": res.Item.role } }
+      : { expr: "attribute_not_exists(#rs) AND attribute_not_exists(#r)", values: {} };
   try {
     await deps.ddb.send(
       new UpdateCommand({
         TableName: deps.tableName,
-        Key: keys.user(user.sub),
+        Key: keys.user(sub),
         UpdateExpression: "SET #rs = :next REMOVE #r",
-        ConditionExpression:
-          user.roles.length === 1
-            ? "#rs = :prev OR (attribute_not_exists(#rs) AND #r = :single)"
-            : "#rs = :prev",
+        ConditionExpression: condition.expr,
         ExpressionAttributeNames: { "#rs": "roles", "#r": "role" },
-        ExpressionAttributeValues: { ":next": next, ":prev": user.roles, ...single },
+        ExpressionAttributeValues: { ":next": next, ...condition.values },
       }),
     );
   } catch (e) {
@@ -359,6 +386,7 @@ async function updateRoles(deps: UserDeps, user: UserProfile, next: Role[]): Pro
     }
     throw e;
   }
+  return next;
 }
 
 /**

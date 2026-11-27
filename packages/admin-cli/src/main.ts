@@ -28,11 +28,10 @@ const program = new Command()
 
 const globals = () => program.opts<{ env: string; yes: boolean }>();
 
-const LOGIN_PATHS: Record<Role, string> = {
+/** 画面のあるロールのログイン URL。管理画面は Step 8 で追加する（docs/design.md §14.7） */
+const LOGIN_PATHS: Partial<Record<Role, string>> = {
   candidate: "/login",
   grader: "/grader/login",
-  // 管理画面は Step 8 で追加する（docs/design.md §14.7）
-  admin: "/admin/login",
 };
 
 function addUserCommands(role: Role, label: string) {
@@ -50,6 +49,10 @@ function addUserCommands(role: Role, label: string) {
       const ctx = await createContext(globals().env);
       const existing = staff ? await findUserByEmail(ctx.deps, opts.email) : undefined;
       if (existing) {
+        if (existing.disabled) {
+          throw new Error(`無効化された利用者です: ${existing.email}`);
+        }
+        if (opts.name) console.log("登録済みのため --name は使いません（氏名は変わりません）。");
         await confirmIfProd(
           ctx,
           `${existing.name} <${existing.email}>（${existing.roles.join(", ")}）に${label}のロールを付与します。`,
@@ -68,7 +71,9 @@ function addUserCommands(role: Role, label: string) {
         });
         console.log(`登録しました: ${user.name} <${user.email}> (sub: ${user.sub})`);
       }
-      console.log(`ログイン URL: ${ctx.outputs.WebUrl}${LOGIN_PATHS[role]}`);
+      const loginPath = LOGIN_PATHS[role];
+      if (loginPath) console.log(`ログイン URL: ${ctx.outputs.WebUrl}${loginPath}`);
+      else console.log("管理画面は準備中です（Step 8）。");
     });
 
   program
