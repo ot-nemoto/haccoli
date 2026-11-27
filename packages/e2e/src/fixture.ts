@@ -72,12 +72,12 @@ export async function prepare(ctx: Context, candidateEmail: string): Promise<Fix
     email: candidateEmail,
     // 採点者は使い回すため、担当一覧で前回の実行と区別できる名前にする
     name: `E2E 候補者 ${candidateEmail.split("@")[0]?.replace("e2e-cand-", "")}`,
-    role: "candidate",
+    roles: ["candidate"],
   });
   const grader =
     (await findUserByEmail(ctx.deps, GRADER_EMAIL)) ??
-    (await registerUser(ctx.deps, { email: GRADER_EMAIL, name: "E2E 採点者", role: "grader" }));
-  if (grader.role !== "grader" || grader.disabled) {
+    (await registerUser(ctx.deps, { email: GRADER_EMAIL, name: "E2E 採点者", roles: ["grader"] }));
+  if (!grader.roles.includes("grader") || grader.disabled) {
     throw new Error(`${GRADER_EMAIL} が有効な採点者ではありません`);
   }
 
@@ -213,7 +213,7 @@ async function sessionFor(ctx: Context, user: UserProfile): Promise<string> {
   if (!r?.IdToken || !r.AccessToken || !r.ExpiresIn) {
     throw new Error(`トークンを取得できませんでした（${res.ChallengeName ?? "不明"}）`);
   }
-  const me: MeResponse = { sub: user.sub, name: user.name, role: user.role };
+  const me: MeResponse = { sub: user.sub, name: user.name, roles: user.roles };
   return JSON.stringify({
     tokens: {
       idToken: r.IdToken,
@@ -222,6 +222,8 @@ async function sessionFor(ctx: Context, user: UserProfile): Promise<string> {
       expiresIn: r.ExpiresIn,
     },
     user: me,
+    // ログインした画面のロール（packages/web/src/auth/session.ts）
+    role: user.roles.includes("candidate") ? "candidate" : "grader",
     expiresAt: Date.now() + r.ExpiresIn * 1000,
   });
 }

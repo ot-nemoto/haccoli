@@ -3,11 +3,11 @@ import { Navigate, useLocation, useNavigate } from "react-router";
 import { ApiError } from "../api.js";
 import { useAuth, WrongRoleError } from "../auth/AuthContext.js";
 import { describeError, startEmailOtp, verifyEmailOtp } from "../auth/cognito.js";
-import { ROLE_ROUTES, type Role, safeReturnPath } from "../auth/roles.js";
+import { ROLE_ROUTES, type ScreenRole, safeReturnPath } from "../auth/roles.js";
 
 type Step = { kind: "email" } | { kind: "code"; email: string; session: string };
 
-export function LoginPage(props: { userRole: Role }) {
+export function LoginPage(props: { userRole: ScreenRole }) {
   const { config, session, signIn } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -21,7 +21,7 @@ export function LoginPage(props: { userRole: Role }) {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
-  if (session?.user.role === props.userRole) {
+  if (session?.role === props.userRole) {
     return <Navigate to={returnTo} replace />;
   }
 

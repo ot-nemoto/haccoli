@@ -1,5 +1,6 @@
 import type { MeResponse } from "@haccoli/shared";
 import type { AuthTokens } from "./cognito.js";
+import type { ScreenRole } from "./roles.js";
 
 /** ログイン中の利用者。ロール・氏名は /api/me（サーバー側の登録情報）を正とする */
 export type SessionUser = MeResponse;
@@ -7,6 +8,8 @@ export type SessionUser = MeResponse;
 export interface Session {
   tokens: AuthTokens;
   user: SessionUser;
+  /** ログインした画面のロール（採点者と管理者を兼ねる人は、画面ごとにログインする。§14.2） */
+  role: ScreenRole;
   /** エポックミリ秒 */
   expiresAt: number;
 }
@@ -18,11 +21,13 @@ const STORAGE_KEY = "haccoli.session";
 export function createSession(
   tokens: AuthTokens,
   user: SessionUser,
+  role: ScreenRole,
   now: number = Date.now(),
 ): Session {
   return {
     tokens,
-    user: { sub: user.sub, name: user.name, role: user.role },
+    user: { sub: user.sub, name: user.name, roles: [...user.roles] },
+    role,
     expiresAt: now + tokens.expiresIn * 1000,
   };
 }
@@ -41,8 +46,9 @@ export function loadSession(): Session | undefined {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     if (!raw) return undefined;
     const session = JSON.parse(raw) as Session;
-    // 旧形式（ID トークン由来の groups を持つ）セッションは破棄して再ログインさせる
-    if (!session.user?.role) return undefined;
+    // 旧形式（ロールが 1 つの形式など）のセッションは破棄して再ログインさせる
+    if (!session.role || !Array.isArray(session.user?.roles)) return undefined;
+    if (!session.user.roles.includes(session.role)) return undefined;
     return isExpired(session) ? undefined : session;
   } catch {
     return undefined;

@@ -9,7 +9,8 @@ import { forbidden, notFound, unauthorized } from "./errors.js";
 export interface AuthUser {
   sub: string;
   name: string;
-  role: Role;
+  /** トークンのグループと DynamoDB の roles の両方にあるロール（§14.3） */
+  roles: Role[];
 }
 
 export interface AppEnv {
@@ -39,7 +40,8 @@ function claimsOf(c: Context<AppEnv>): Record<string, unknown> | undefined {
  * ここでは以下を確認する。
  * - アクセストークンであること（ID トークンでの呼び出しは受け付けない）
  * - DynamoDB に登録済みで無効化されていないこと（無効化後も最長 60 分残るトークンを拒否する）
- * - Cognito グループと DynamoDB のロールが一致すること
+ * - Cognito グループと DynamoDB の roles の両方にあるロールを 1 つ以上持つこと（§14.3）。
+ *   付与は次にトークンが発行されたときから、削除は DynamoDB を変えた時点で有効になる
  */
 export function authenticate(deps: ApiDeps): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
@@ -49,9 +51,11 @@ export function authenticate(deps: ApiDeps): MiddlewareHandler<AppEnv> {
 
     const profile = await getUserBySub(deps, sub);
     if (!profile || profile.disabled) throw forbidden();
-    if (!parseGroups(claims["cognito:groups"]).includes(profile.role)) throw forbidden();
+    const groups = parseGroups(claims["cognito:groups"]);
+    const roles = profile.roles.filter((r) => groups.includes(r));
+    if (roles.length === 0) throw forbidden();
 
-    c.set("user", { sub: profile.sub, name: profile.name, role: profile.role });
+    c.set("user", { sub: profile.sub, name: profile.name, roles });
     await next();
   };
 }
@@ -59,7 +63,7 @@ export function authenticate(deps: ApiDeps): MiddlewareHandler<AppEnv> {
 /** ルート単位のロール認可 */
 export function requireRole(role: Role): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    if (c.get("user").role !== role) throw forbidden();
+    if (!c.get("user").roles.includes(role)) throw forbidden();
     await next();
   };
 }

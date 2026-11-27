@@ -49,7 +49,7 @@ describe("GET /api/me", () => {
   it("DynamoDB のプロフィールからロールと氏名を返す（email は返さない）", async () => {
     const res = await call("/api/me", accessClaims());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sub: "sub-c", name: "山田 太郎", role: "candidate" });
+    expect(await res.json()).toEqual({ sub: "sub-c", name: "山田 太郎", roles: ["candidate"] });
     expect(ddbMock.commandCalls(GetCommand)[0]?.args[0].input.Key).toEqual({
       PK: "USER#sub-c",
       SK: "PROFILE",
@@ -100,6 +100,32 @@ describe("GET /api/me", () => {
   it("Cognito グループと DynamoDB のロールが一致しなければ 403", async () => {
     const res = await call("/api/me", accessClaims({ "cognito:groups": "[grader]" }));
     expect(res.status).toBe(403);
+  });
+
+  describe("複数ロール（§14.3）", () => {
+    const staff = { ...candidate, role: undefined, roles: ["grader", "admin"] };
+
+    it("トークンのグループと roles の両方にあるロールだけを返す", async () => {
+      ddbMock.on(GetCommand).resolves({ Item: staff });
+      const both = await call("/api/me", accessClaims({ "cognito:groups": "[grader admin]" }));
+      expect(((await both.json()) as { roles: string[] }).roles).toEqual(["grader", "admin"]);
+      // 付与した直後（トークンにまだグループがない）は、そのロールを認めない
+      const before = await call("/api/me", accessClaims({ "cognito:groups": "[grader]" }));
+      expect(((await before.json()) as { roles: string[] }).roles).toEqual(["grader"]);
+    });
+
+    it("roles から外したロールは、トークンにグループが残っていても認めない", async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { ...staff, roles: ["grader"] } });
+      const res = await call("/api/me", accessClaims({ "cognito:groups": "[admin]" }));
+      expect(res.status).toBe(403);
+    });
+
+    it("採点者を兼ねる管理者は /grader/* を通過する", async () => {
+      ddbMock.on(GetCommand).resolves({ Item: staff });
+      const claims = accessClaims({ "cognito:groups": "[grader admin]" });
+      expect((await call("/api/grader/nope", claims)).status).toBe(404);
+      expect((await call("/api/candidate/attempts", claims)).status).toBe(403);
+    });
   });
 
   it("想定外のエラーは詳細を隠して 500", async () => {

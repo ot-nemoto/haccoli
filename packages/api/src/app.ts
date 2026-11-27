@@ -65,8 +65,8 @@ export function createApp(deps: ApiDeps) {
   app.use(authenticate(deps));
 
   app.get("/me", (c) => {
-    const { sub, name, role } = c.get("user");
-    return c.json<MeResponse>({ sub, name, role });
+    const { sub, name, roles } = c.get("user");
+    return c.json<MeResponse>({ sub, name, roles });
   });
 
   // ロール別のルート。各ルートのリソース単位の認可は ensureOwned で行う

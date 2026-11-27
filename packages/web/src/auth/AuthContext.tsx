@@ -2,7 +2,7 @@ import { createContext, type ReactNode, useCallback, useContext, useMemo, useSta
 import { getMe } from "../api.js";
 import type { RuntimeConfig } from "../config.js";
 import { type AuthTokens, revokeToken } from "./cognito.js";
-import type { Role } from "./roles.js";
+import type { ScreenRole } from "./roles.js";
 import { clearSession, createSession, loadSession, type Session, saveSession } from "./session.js";
 
 interface AuthContextValue {
@@ -13,7 +13,7 @@ interface AuthContextValue {
    * expectedRole と一致しない場合（候補者が採点者画面からログイン等）はトークンを失効させて
    * WrongRoleError を投げる（docs/design.md §4.1）。
    */
-  signIn: (tokens: AuthTokens, expectedRole: Role) => Promise<Session>;
+  signIn: (tokens: AuthTokens, expectedRole: ScreenRole) => Promise<Session>;
   signOut: () => Promise<void>;
 }
 
@@ -34,7 +34,7 @@ export function AuthProvider(props: { config: RuntimeConfig; children: ReactNode
   );
 
   const signIn = useCallback(
-    async (tokens: AuthTokens, expectedRole: Role) => {
+    async (tokens: AuthTokens, expectedRole: ScreenRole) => {
       let me: Awaited<ReturnType<typeof getMe>>;
       try {
         me = await getMe(tokens.accessToken);
@@ -42,11 +42,11 @@ export function AuthProvider(props: { config: RuntimeConfig; children: ReactNode
         await revoke(tokens.refreshToken);
         throw e;
       }
-      if (me.role !== expectedRole) {
+      if (!me.roles.includes(expectedRole)) {
         await revoke(tokens.refreshToken);
         throw new WrongRoleError();
       }
-      const s = createSession(tokens, me);
+      const s = createSession(tokens, me, expectedRole);
       saveSession(s);
       setSession(s);
       return s;
