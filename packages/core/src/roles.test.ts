@@ -215,7 +215,12 @@ describe("removeRole", () => {
       .find((i) => i.TableName === "audit");
     expect(finished?.ExpressionAttributeValues).toMatchObject({
       ":status": "SUCCEEDED",
-      ":detail": { removed: "admin", rolesBefore: ["grader", "admin"], rolesAfter: ["grader"] },
+      ":detail": {
+        removed: "admin",
+        rolesBefore: ["grader", "admin"],
+        rolesAfter: ["grader"],
+        changed: true,
+      },
     });
   });
 
@@ -223,6 +228,12 @@ describe("removeRole", () => {
     withUser(item("g", ["grader"]));
     await removeRole(deps, { email: "g@example.com", role: "admin" });
     expect(calls).toEqual(["cognito:remove:admin"]);
+    // グループをそろえた記録は残すが、ロールは変わっていないことがわかるようにする
+    const finished = ddbMock
+      .commandCalls(UpdateCommand)
+      .map((c) => c.args[0].input)
+      .find((i) => i.TableName === "audit");
+    expect(finished?.ExpressionAttributeValues?.[":detail"]).toMatchObject({ changed: false });
   });
 
   it("最後のロールは外せない", async () => {

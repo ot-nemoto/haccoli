@@ -51,7 +51,12 @@ export async function createContext(env: string): Promise<Context> {
     "WebUrl",
     "SubmissionsBucket",
   ] as const) {
-    if (!raw[key]) throw new Error(`スタック ${stackName} に出力 ${key} がありません`);
+    if (!raw[key]) {
+      // 新しい出力（例: Step 7-2 の AuditTableName）を CLI が先に使うと起きる
+      throw new Error(
+        `スタック ${stackName} に出力 ${key} がありません。CLI より古いスタックの可能性があります。先に ${env} にデプロイしてください`,
+      );
+    }
   }
   const outputs = raw as unknown as StackOutputs;
 

@@ -289,7 +289,7 @@ export async function addRole(
       detail: { added: input.role, rolesBefore: user.roles },
     },
     () => grantRole(deps, user, input.role),
-    (after) => ({ detail: { rolesAfter: after.roles } }),
+    (after) => ({ detail: { rolesAfter: after.roles, changed: changedRoles(user, after) } }),
   );
 }
 
@@ -350,9 +350,16 @@ export async function removeRole(
       await groupCommand(deps, "remove", user.email, input.role);
       return { ...user, roles };
     },
-    (after) => ({ detail: { rolesAfter: after.roles } }),
+    (after) => ({ detail: { rolesAfter: after.roles, changed: changedRoles(user, after) } }),
   );
 }
+
+/**
+ * DynamoDB のロールが変わったか。付与済み・削除済みでも Cognito のグループはそろえるため記録は残すが、
+ * 実際の変更と区別できるようにする
+ */
+const changedRoles = (before: UserProfile, after: UserProfile) =>
+  before.roles.join(",") !== after.roles.join(",");
 
 const lastRole = () =>
   new ValidationError("最後のロールは外せません。利用を止める場合は無効化してください");
