@@ -8,6 +8,7 @@ import {
   BatchWriteCommand,
   DeleteCommand,
   DynamoDBDocumentClient,
+  GetCommand,
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { mockClient } from "aws-sdk-client-mock";
@@ -64,20 +65,43 @@ const children = (id: string) => [
   { PK: `ATTEMPT#${id}`, SK: "GRADE#g1" },
 ];
 
+/** 削除が後続の読み込みに反映される、最小限のテーブルの代用 */
+const table = new Map<string, Record<string, unknown>>();
+const tkey = (pk: unknown, sk: unknown) => `${String(pk)}|${String(sk)}`;
+
 function withData(u: Record<string, unknown> | undefined, attempts: Record<string, unknown>[]) {
-  ddbMock
-    .on(QueryCommand, {
-      IndexName: "GSI1",
-      ExpressionAttributeValues: { ":pk": "EMAIL#cand@example.com" },
-    })
-    .resolves({ Items: u ? [u] : [] })
-    .on(QueryCommand, { IndexName: "GSI1", ExpressionAttributeValues: { ":pk": "CAND#cand" } })
-    .resolves({ Items: attempts });
+  table.clear();
+  if (u) table.set(tkey(u.PK, u.SK), u);
   for (const a of attempts) {
-    ddbMock
-      .on(QueryCommand, { ExpressionAttributeValues: { ":pk": String(a.PK) } })
-      .resolves({ Items: [a, ...children(String(a.attemptId))] });
+    table.set(tkey(a.PK, a.SK), a);
+    for (const c of children(String(a.attemptId))) table.set(tkey(c.PK, c.SK), c);
   }
+  const rows = () => [...table.values()];
+  ddbMock.on(QueryCommand).callsFake((input) => {
+    const pk = input.ExpressionAttributeValues[":pk"] as string;
+    if (pk.startsWith("EMAIL#")) {
+      return { Items: rows().filter((r) => r.SK === "PROFILE" && `EMAIL#${r.email}` === pk) };
+    }
+    if (pk.startsWith("CAND#")) {
+      return {
+        Items: rows().filter((r) => r.SK === "META" && `CAND#${r.candidateSub}` === pk),
+      };
+    }
+    return { Items: rows().filter((r) => r.PK === pk) };
+  });
+  ddbMock
+    .on(GetCommand)
+    .callsFake((input) => ({ Item: table.get(tkey(input.Key.PK, input.Key.SK)) }));
+  ddbMock.on(DeleteCommand).callsFake((input) => {
+    const k = tkey(input.Key.PK, input.Key.SK);
+    const cur = table.get(k);
+    const expected = input.ExpressionAttributeValues?.[":status"];
+    if (expected !== undefined && cur?.status !== expected) {
+      throw Object.assign(new Error("failed"), { name: "ConditionalCheckFailedException" });
+    }
+    table.delete(k);
+    return {};
+  });
 }
 
 beforeEach(() => {
@@ -85,8 +109,12 @@ beforeEach(() => {
   cognitoMock.reset();
   versions.clear();
   vi.clearAllMocks();
-  ddbMock.on(BatchWriteCommand).resolves({});
-  ddbMock.on(DeleteCommand).resolves({});
+  ddbMock.on(BatchWriteCommand).callsFake((input) => {
+    for (const r of input.RequestItems.t) {
+      table.delete(tkey(r.DeleteRequest.Key.PK, r.DeleteRequest.Key.SK));
+    }
+    return {};
+  });
   cognitoMock.on(AdminDeleteUserCommand).resolves({});
 });
 
@@ -105,8 +133,7 @@ describe("planPurge", () => {
       ["a1", 4, 2],
       ["a2", 4, 0],
     ]);
-    expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(0);
-    expect(ddbMock.commandCalls(BatchWriteCommand)).toHaveLength(0);
+    expect(table.size).toBe(9);
     expect(fileVersions.deleteVersions).not.toHaveBeenCalled();
   });
 
@@ -150,11 +177,13 @@ describe("executePurge", () => {
       "ASSIGN#g1",
       "GRADE#g1",
     ]);
-    const deletes = ddbMock.commandCalls(DeleteCommand).map((c) => c.args[0].input.Key);
-    expect(deletes).toEqual([
+    const deletes = ddbMock.commandCalls(DeleteCommand).map((c) => c.args[0].input);
+    expect(deletes.map((d) => d.Key)).toEqual([
       { PK: "ATTEMPT#a1", SK: "META" },
       { PK: "USER#cand", SK: "PROFILE" },
     ]);
+    expect(deletes[0]?.ConditionExpression).toBe("#s = :status");
+    expect(table.size).toBe(0);
     expect(cognitoMock.commandCalls(AdminDeleteUserCommand)[0]?.args[0].input).toEqual({
       UserPoolId: "pool",
       Username: "cand@example.com",
@@ -175,18 +204,51 @@ describe("executePurge", () => {
 
   it("未処理のアイテムは再送する", async () => {
     withData(user, [attemptMeta("a1", "GRADED")]);
-    ddbMock
-      .on(BatchWriteCommand)
-      .resolvesOnce({
-        UnprocessedItems: {
-          t: [{ DeleteRequest: { Key: { PK: "ATTEMPT#a1", SK: "GRADE#g1" } } }],
-        },
-      })
-      .resolves({});
+    let first = true;
+    ddbMock.on(BatchWriteCommand).callsFake((input) => {
+      const reqs = input.RequestItems.t;
+      const done = first ? reqs.slice(0, -1) : reqs;
+      for (const r of done) table.delete(tkey(r.DeleteRequest.Key.PK, r.DeleteRequest.Key.SK));
+      const rest = first ? reqs.slice(-1) : [];
+      first = false;
+      return { UnprocessedItems: rest.length ? { t: rest } : {} };
+    });
     const plan = await planPurge(deps, "cand@example.com");
     await executePurge(deps, plan);
     const calls = ddbMock.commandCalls(BatchWriteCommand);
     expect(calls).toHaveLength(2);
     expect(calls[1]?.args[0].input.RequestItems?.t).toHaveLength(1);
+    expect(table.size).toBe(0);
+  });
+
+  it("確認の間に受験が発行されたら、何も削除せずに中止する", async () => {
+    withData(user, [attemptMeta("a1", "GRADED")]);
+    const plan = await planPurge(deps, "cand@example.com");
+    const a2 = attemptMeta("a2", "CANCELED");
+    table.set(tkey(a2.PK, a2.SK), a2);
+    await expect(executePurge(deps, plan)).rejects.toThrow("対象が変わりました");
+    expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(0);
+    expect(fileVersions.deleteVersions).not.toHaveBeenCalled();
+  });
+
+  it("確認の間に採点中へ戻ったら拒否する", async () => {
+    withData(user, [attemptMeta("a1", "GRADED")]);
+    const plan = await planPurge(deps, "cand@example.com");
+    table.set(tkey("ATTEMPT#a1", "META"), attemptMeta("a1", "GRADING"));
+    await expect(executePurge(deps, plan)).rejects.toBeInstanceOf(StateError);
+    expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(0);
+  });
+
+  it("META の削除時に状態が変わっていたら、User を消さずに中止する", async () => {
+    withData(user, [attemptMeta("a1", "GRADED")]);
+    const plan = await planPurge(deps, "cand@example.com");
+    // 子アイテムの削除中に再割り当てされた
+    ddbMock.on(BatchWriteCommand).callsFake(() => {
+      table.set(tkey("ATTEMPT#a1", "META"), attemptMeta("a1", "GRADING"));
+      return {};
+    });
+    await expect(executePurge(deps, plan)).rejects.toThrow("対象が変わりました");
+    expect(cognitoMock.commandCalls(AdminDeleteUserCommand)).toHaveLength(0);
+    expect(table.has(tkey("USER#cand", "PROFILE"))).toBe(true);
   });
 });

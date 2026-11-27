@@ -5,7 +5,13 @@ import {
 import { DeleteObjectsCommand, ListObjectVersionsCommand, type S3Client } from "@aws-sdk/client-s3";
 import { BatchWriteCommand, DeleteCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { AttemptStatus } from "@haccoli/shared";
-import { type AttemptRecord, effectiveStatus, toAttempt } from "./attempts.js";
+import {
+  type AttemptRecord,
+  effectiveStatus,
+  getAttemptMeta,
+  isConditionFailure,
+  toAttempt,
+} from "./attempts.js";
 import { StateError, ValidationError } from "./errors.js";
 import { GSI1, keys } from "./keys.js";
 import { findUserByEmail, type UserDeps, UserNotFoundError, type UserProfile } from "./users.js";
@@ -56,18 +62,9 @@ export async function planPurge(
     );
   }
 
-  const attempts = await queryAll(deps, {
-    IndexName: GSI1,
-    KeyConditionExpression: "GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
-    ExpressionAttributeValues: {
-      ":pk": keys.attemptsByCandidate(user.sub, "").GSI1PK,
-      ":sk": "ATTEMPT#",
-    },
-  });
+  const attempts = await candidateAttempts(deps, user.sub);
   const targets: PurgeTarget[] = [];
-  for (const item of attempts) {
-    const attempt = toAttempt(item);
-    if (attempt.candidateSub !== user.sub) continue;
+  for (const attempt of attempts) {
     const status = effectiveStatus(attempt, now);
     if (BLOCKING.includes(status)) {
       throw new StateError(
@@ -91,19 +88,45 @@ export async function planPurge(
  * 個人データを削除する。途中で失敗しても、再実行すれば残りを削除できる順序にしている：
  * 受験ごとに S3 → 回答・割り当て・採点 → 受験（META）、最後に Cognito → User。
  * User を最後に消すので、再実行時もメールアドレスから対象を見つけられる。
+ *
+ * 確認を待つ間に受験が発行・延長・再割り当てされた場合に備え、実行直前に対象を調べ直し、
+ * 計画と違えば何も削除せずに中止する。受験ごとにも状態を読み直し、META は状態を条件に削除する。
  */
 export async function executePurge(deps: PurgeDeps, plan: PurgePlan): Promise<void> {
+  const fresh = await planPurge(deps, plan.user.email);
+  if (fresh.user.sub !== plan.user.sub || planKey(fresh) !== planKey(plan)) {
+    throw changed();
+  }
+
   for (const { attempt } of plan.attempts) {
+    const current = await getAttemptMeta(deps, attempt.attemptId);
+    if (!current || current.status !== attempt.status) throw changed();
+
     const versions = await deps.fileVersions.listVersions(attemptPrefix(attempt.attemptId));
     if (versions.length > 0) await deps.fileVersions.deleteVersions(versions);
 
     const items = await attemptItems(deps, attempt.attemptId);
     const children = items.filter((i) => i.SK !== "META");
     await batchDelete(deps, children);
-    await deps.ddb.send(
-      new DeleteCommand({ TableName: deps.tableName, Key: keys.attemptMeta(attempt.attemptId) }),
-    );
+    try {
+      await deps.ddb.send(
+        new DeleteCommand({
+          TableName: deps.tableName,
+          Key: keys.attemptMeta(attempt.attemptId),
+          ConditionExpression: "#s = :status",
+          ExpressionAttributeNames: { "#s": "status" },
+          ExpressionAttributeValues: { ":status": attempt.status },
+        }),
+      );
+    } catch (e) {
+      if (isConditionFailure(e)) throw changed();
+      throw e;
+    }
   }
+
+  // 受験が残っていれば User を消さない（消すとメールアドレスから辿れなくなる）
+  const remaining = await candidateAttempts(deps, plan.user.sub);
+  if (remaining.length > 0) throw changed();
 
   try {
     await deps.cognito.send(
@@ -116,6 +139,28 @@ export async function executePurge(deps: PurgeDeps, plan: PurgePlan): Promise<vo
   await deps.ddb.send(
     new DeleteCommand({ TableName: deps.tableName, Key: keys.user(plan.user.sub) }),
   );
+}
+
+const changed = () =>
+  new StateError("INVALID", "削除の対象が変わりました。もう一度実行してください");
+
+/** 計画の比較用（受験 ID と保存されている状態） */
+const planKey = (plan: PurgePlan) =>
+  plan.attempts
+    .map((t) => `${t.attempt.attemptId}:${t.attempt.status}`)
+    .sort()
+    .join(",");
+
+async function candidateAttempts(deps: UserDeps, sub: string): Promise<AttemptRecord[]> {
+  const items = await queryAll(deps, {
+    IndexName: GSI1,
+    KeyConditionExpression: "GSI1PK = :pk AND begins_with(GSI1SK, :sk)",
+    ExpressionAttributeValues: {
+      ":pk": keys.attemptsByCandidate(sub, "").GSI1PK,
+      ":sk": "ATTEMPT#",
+    },
+  });
+  return items.map(toAttempt).filter((a) => a.candidateSub === sub);
 }
 
 async function attemptItems(deps: UserDeps, attemptId: string) {
