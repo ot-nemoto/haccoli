@@ -239,15 +239,17 @@ erDiagram
   ASSIGNMENT ||--o| GRADE : "採点結果"
 ```
 
-| エンティティ    | PK                    | SK                   | 主な属性                                                                                                                              | GSI                                                                                 |
-| --------------- | --------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| User            | `USER#<sub>`          | `PROFILE`            | email, name, role, disabled, createdAt                                                                                                | GSI1: `EMAIL#<email>` / `USER`                                                      |
-| Exam            | `EXAM#<examId>`       | `META`               | title, latestVersion                                                                                                                  |                                                                                     |
-| ExamVersion     | `EXAM#<examId>`       | `V#<version>`        | 課題定義全体（intro, questions[] 本文含む）, publishedAt                                                                              |                                                                                     |
-| Attempt（受験） | `ATTEMPT#<attemptId>` | `META`               | candidateSub, **candidateName**（非正規化）, examId, examVersion, status, issuedAt, **deadlineAt**, startedAt, submittedAt, expiredAt | GSI1: `CAND#<sub>` / `ATTEMPT#<issuedAt>`、GSI2: `STATUS#<status>` / `<deadlineAt>` |
-| Answer          | `ATTEMPT#<attemptId>` | `ANS#<qid>`          | type, content（§5.1）, updatedAt, version（楽観ロック）                                                                               |                                                                                     |
-| Assignment      | `ATTEMPT#<attemptId>` | `ASSIGN#<graderSub>` | graderName, assignedAt, status(ASSIGNED/DRAFT/DONE)                                                                                   | GSI1: `GRADER#<sub>` / `ASSIGN#<assignedAt>`                                        |
-| Grade           | `ATTEMPT#<attemptId>` | `GRADE#<graderSub>`  | items: {qid: {score?, comment?}}, overallComment, finalizedAt                                                                         |                                                                                     |
+| エンティティ         | PK                    | SK                   | 主な属性                                                                                                                              | GSI                                                                                 |
+| -------------------- | --------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| User                 | `USER#<sub>`          | `PROFILE`            | email, name, role（Phase 2 で `roles: Role[]`。§14.2）, disabled, createdAt                                                           | GSI1: `EMAIL#<email>` / `USER`                                                      |
+| Exam                 | `EXAM#<examId>`       | `META`               | title, latestVersion                                                                                                                  |                                                                                     |
+| ExamVersion          | `EXAM#<examId>`       | `V#<version>`        | 課題定義全体（intro, questions[] 本文含む）, publishedAt                                                                              |                                                                                     |
+| Attempt（受験）      | `ATTEMPT#<attemptId>` | `META`               | candidateSub, **candidateName**（非正規化）, examId, examVersion, status, issuedAt, **deadlineAt**, startedAt, submittedAt, expiredAt | GSI1: `CAND#<sub>` / `ATTEMPT#<issuedAt>`、GSI2: `STATUS#<status>` / `<deadlineAt>` |
+| Answer               | `ATTEMPT#<attemptId>` | `ANS#<qid>`          | type, content（§5.1）, updatedAt, version（楽観ロック）                                                                               |                                                                                     |
+| Assignment           | `ATTEMPT#<attemptId>` | `ASSIGN#<graderSub>` | graderName, assignedAt, status(ASSIGNED/DRAFT/DONE)                                                                                   | GSI1: `GRADER#<sub>` / `ASSIGN#<assignedAt>`                                        |
+| Grade                | `ATTEMPT#<attemptId>` | `GRADE#<graderSub>`  | items: {qid: {score?, comment?}}, overallComment, finalizedAt                                                                         |                                                                                     |
+| ExamDraft（Phase 2） | `EXAM#<examId>`       | `DRAFT`              | 編集中の課題定義, version（楽観ロック）, updatedAt, updatedBy（§14.5）                                                                |                                                                                     |
+| AuditLog（Phase 2）  | `AUDIT#<yyyymm>`      | `<timestamp>#<uuid>` | actor, action, target, detail, status（§14.4）                                                                                        |                                                                                     |
 
 - 受験 1 件に回答・割り当て・採点を同一 PK でぶら下げ、1 クエリで全体を取得
 - 課題定義は 1 版 1 アイテム（400KB 制約内に収まる想定。超える場合は本文を S3 に逃がす）
@@ -517,24 +519,37 @@ MVP は管理操作を CLI に限定していた（§3.1）。本番運用で、
 | 採点                                  |                       |                |   ○    |        |
 | 受験                                  |                       |                |        |   ○    |
 
-- ※1 管理者は、採点者・管理者のアカウントに管理者の権限を付与・削除できる。**自分自身の権限は外せない**（誤操作で管理者がいなくなるのを防ぐ）。管理者がいなくなっても、スーパー管理者が CLI で付与できる
+- ※1 管理者は、採点者・管理者のアカウントに管理者の権限を付与・削除できる。管理者がいなくなるのを防ぐため、画面からは次の操作をできなくする
+  - 自分自身の `admin` を外す・自分自身を無効化する
+  - **有効な管理者が最後の 1 人のとき**、その人の `admin` を外す・無効化する（管理者同士で互いに外し合っても 0 人にならない）
+  - 管理者がいなくなっても、スーパー管理者が CLI で付与できる
 - 個人データの削除は元に戻せないため、スーパー管理者のみとする
 - 管理者は候補者のメールアドレスを閲覧できる（受験の発行・連絡に必要）。採点者には引き続き見せない
 
 ### 14.2 複数ロール
 
 - 1 人が複数のロールを持てる。認めるのは **`grader` と `admin` の組み合わせのみ**。`candidate` は他のロールと兼ねない（社外の候補者に社内の権限を付けない）
-- User の `role` を **`roles: Role[]`** に変える。既存データ（`role` のみ）は読み込み時に `[role]` とみなし、更新時に `roles` へ書き換える
+- User の `role` を **`roles: Role[]`** に変える（§6.1）。既存データは Step 7 のデプロイ時に **一括で移行** する（スーパー管理者が CLI で実行。`role` → `roles: [role]`）。読み込み側は、移行漏れに備えて `role` しかないアイテムも `[role]` として扱う
+- **最後のロールは外せない**。どのロールも持たない有効なユーザー（どの画面にも入れない）を作らないため。利用を止めるときは無効化する。`admin:add` で新規登録した人は `roles: [admin]` になる
 - Cognito のグループも複数付与する（`grader` と `admin`）
+- `role` から `roles` への変更に合わせて直す箇所
+  - core：ロールの判定（`assignGraders` の採点者チェック、`issueAttempt` の候補者チェック、`planPurge` の候補者チェック）、`registerUser`、`listUsers` の絞り込み（`contains(roles, :r)`）
+  - API：`AuthUser.role` → `roles`、`requireRole`（含むかで判定）、`/me`
+  - web：ロールと画面の対応（`ROLE_ROUTES`）、ログイン後のロールの判定
+  - CLI：`candidate:list`・`grader:list` の表示
 - `/me` は `roles` を返す。ログイン画面は今と同じく画面ごとに分け（`/login`・`/grader/login`・`/admin/login`）、その画面のロールを持たなければ拒否する。両方を持つ人は、それぞれのログイン画面から入る
 
 ### 14.3 認可
 
 - API は **トークンの `cognito:groups` と DynamoDB の `roles` の両方** に、そのルートのロールがあるときだけ通す（今の `role` の照合を `roles` に拡張する）
-  - 付与：グループはトークンの発行時に入るため、**次のログインから有効**
+  - 付与：グループはトークンの発行時に入るため、**次にトークンが発行されたとき（ログイン、またはリフレッシュ）から有効**
   - 削除・無効化：DynamoDB を毎回照合するため、**即時に無効**（発行済みのトークンが有効期限内でも通さない）
-- 付与・削除は DynamoDB（`roles`）→ Cognito（グループ）の順に行い、Cognito で失敗したら DynamoDB を戻す（登録時と同じ考え方。§4.2）
-- **管理者 API は別の Lambda に分ける**。Cognito のユーザー管理（`AdminCreateUser`・`AdminAddUserToGroup`・`AdminRemoveUserFromGroup`・`AdminDisableUser` など）の権限は、管理者 API の Lambda だけに与える。候補者・採点者の API の Lambda の権限は今のまま
+- 両方がそろわないと通さないため、途中で片方だけ成功しても権限は残らない。そのうえで順序を次のように決める
+  - 付与：Cognito（グループ）→ DynamoDB（`roles`）。DynamoDB で失敗したら Cognito を戻す（登録の `registerUser` と同じく、Cognito を先に作り、失敗したら Cognito を戻す）
+  - 削除：DynamoDB → Cognito。DynamoDB を先に変えるので、その時点で即時に無効になる。Cognito で失敗しても権限は残らず、再実行でそろえる
+- **管理者 API は別の Lambda に分ける**。次の権限は管理者 API の Lambda だけに与え、候補者・採点者の API の Lambda の権限は今のまま（Scan なし）にする
+  - Cognito のユーザー管理（`AdminCreateUser`・`AdminAddUserToGroup`・`AdminRemoveUserFromGroup`・`AdminDisableUser` など）
+  - DynamoDB の `Scan`（利用者・課題・受験の一覧）と GSI2 の `Query`（状態ごとの受験）。一覧の API は、Scan とフィルタで空のページを返さないよう、指定件数に達するか最後まで読み進めてから返す
 - 候補者・採点者の API から管理者の操作に到達できないことを、ルート単位の認可テストで固定する
 
 ### 14.4 監査ログ
@@ -549,7 +564,9 @@ MVP は管理操作を CLI に限定していた（§3.1）。本番運用で、
 | 対象   | 利用者の `sub`・受験 ID・課題 ID など                                                                |
 | 内容   | 変更の要点（例: 付与したロール、新しい期限）。**回答・採点の本文や候補者のメールアドレスは含めない** |
 
-- 記録は `packages/core` の各操作で行い、API と CLI で漏れがないようにする。記録に失敗したら操作も失敗させる（同じトランザクションに入れられる操作は入れる）
+- 記録は `packages/core` の各操作で行い、API と CLI で漏れがないようにする。書き込むタイミングは操作の種類で分ける
+  - **DynamoDB だけの操作**（受験の発行・延長・取消・割り当て、課題の保存・公開など）：操作と同じトランザクションで書く。記録できなければ操作も行われない
+  - **Cognito・S3 にまたがる操作**（登録・ロールの変更・無効化・個人データの削除）：実行前に `status: STARTED` で書き、終わったら `SUCCEEDED` / `FAILED` に更新する。実行前の書き込みに失敗したら操作しない。最後の更新に失敗した場合は `STARTED` のまま残るので、一覧で「結果不明」と表示し、対象の状態を確かめる
 - 個人データの削除（`user:purge`）でも、監査ログには削除した事実（対象の `sub`・実行者・日時）が残る。メールアドレスは残さない
 - 保持期間は当面無期限（件数が少ないため）。必要になれば TTL を設定する
 - 管理画面に一覧（月ごと・操作の種類で絞り込み）を設ける
@@ -557,6 +574,7 @@ MVP は管理操作を CLI に限定していた（§3.1）。本番運用で、
 ### 14.5 課題の作成・編集
 
 - 課題は画面で作成・編集する。編集中の内容は **下書き**（`EXAM#<examId>` / `DRAFT`、楽観ロック用の `version` を持つ）に保存し、「公開」で新しい版（`V#<version>`）を作る。版の考え方は今と同じで、発行済みの受験には影響しない（§5）
+- 新しい課題は、下書きを最初に保存したときに `META` も作る（`latestVersion` なし）。課題の一覧（`listExams` は `META` を読む）に、未公開の課題も出すため。未公開の課題には受験を発行できない（`issueAttempt` は公開済みの版がなければ拒否する）
 - 公開時の検証は `exam:publish` と同じ（`parseExamDefinition`）。問題の追加・削除・並べ替え、回答形式（記述・選択・ファイル）、選択肢、配点・採点基準を編集できる。本文は Markdown で、候補者・採点者の画面と同じ表示でプレビューする
 - `examId` は作成時に決め、変更できない
 - 画面で編集するようになった後は、**DynamoDB の最新版を正** とする。リポジトリの `exams/` はサンプルと初期投入用に残す。CLI の `exam:publish` で投入すると、画面で編集した内容を上書きした新しい版になるため、手順書で注意する
