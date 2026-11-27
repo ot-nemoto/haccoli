@@ -17,8 +17,10 @@ export class SerialRunner {
       this.pending.add(key);
       return this.idle(key);
     }
-    const p = this.task(key)
-      .catch(() => undefined)
+    // 同期的な例外も同じ経路で扱う。失敗は task 側で画面に出す前提で、ここでは記録だけする
+    const p = Promise.resolve()
+      .then(() => this.task(key))
+      .catch((e: unknown) => console.error("SerialRunner:", key, e))
       .finally(() => {
         this.running.delete(key);
         if (this.pending.delete(key)) void this.run(key);

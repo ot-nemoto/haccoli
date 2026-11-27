@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SerialRunner } from "./serial.js";
 
 /** 外から完了させられる処理 */
@@ -52,6 +52,7 @@ describe("SerialRunner", () => {
       return d.promise;
     });
     const all = [runner.run("q1"), runner.run("q1"), runner.run("q1")];
+    await tick();
     calls[0]?.resolve();
     await tick();
     calls[1]?.resolve();
@@ -70,21 +71,28 @@ describe("SerialRunner", () => {
     });
     const a = runner.run("q1");
     const b = runner.run("q2");
+    await tick();
     expect(started).toEqual(["q1", "q2"]);
     gates.get("q1")?.resolve();
     gates.get("q2")?.resolve();
     await Promise.all([a, b]);
   });
 
-  it("処理が失敗しても reject せず、次の要求を実行できる", async () => {
+  it("処理が失敗しても（同期的な例外を含む）reject せず記録し、次の要求を実行できる", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     let n = 0;
-    const runner = new SerialRunner(async () => {
+    const runner = new SerialRunner((): Promise<void> => {
       n += 1;
-      if (n === 1) throw new Error("network");
+      if (n === 1) throw new Error("sync");
+      if (n === 2) return Promise.reject(new Error("network"));
+      return Promise.resolve();
     });
     await expect(runner.run("q1")).resolves.toBeUndefined();
+    await expect(runner.run("q1")).resolves.toBeUndefined();
     await runner.run("q1");
-    expect(n).toBe(2);
+    expect(n).toBe(3);
+    expect(logged).toHaveBeenCalledTimes(2);
+    logged.mockRestore();
   });
 
   it("idle は処理がなければすぐ解決する", async () => {
