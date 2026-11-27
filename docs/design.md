@@ -1,6 +1,6 @@
 # 採用課題試験管理システム 設計書（MVP）
 
-- ステータス: Draft v0.5
+- ステータス: Draft v0.6
 - 対象: MVP（最小構成）
 - 前提スタック: TypeScript / Node.js（devcontainer: `typescript-node:24`）、AWS
 
@@ -13,6 +13,7 @@
 | v0.3 | 受験期限を **日付指定** に変更、期限切れは **未提出（EXPIRED）** 扱い、コード提出を **zip アップロードのみ** に限定（エディタ入力・GitHub URL は対象外へ）、提出ファイル上限 20MB で確定 |
 | v0.4 | 監視を **最小構成**（API エラー、SES バウンス率・苦情率）に絞り、prod のみ設定。概算コストを内訳付きで更新                                                                               |
 | v0.5 | `candidate:import` と CLI の監査ログを後続フェーズへ。運用手順書（[runbook.md](runbook.md)）を追加                                                                                       |
+| v0.6 | 管理者ロール（Cognito の `admin`）と管理画面を Phase 2 として追加（§14）。IAM で CLI を実行する管理者をスーパー管理者と呼ぶ。監査ログを管理画面と同時に実装する                          |
 
 ---
 
@@ -36,26 +37,27 @@
 
 ### 1.2 MVP では対象外（後続フェーズ）
 
-- 管理画面（MVP は CLI スクリプトで運用）
-- 管理画面からの課題（問題）編集 → MVP では課題定義を **リポジトリ内の JSON/Markdown で管理し、CLI で投入**
+- 管理画面（MVP は CLI スクリプトで運用）→ **Phase 2 で追加**（§14）
+- 管理画面からの課題（問題）編集 → MVP では課題定義を **リポジトリ内の JSON/Markdown で管理し、CLI で投入**。**Phase 2 で画面から作成・編集できるようにする**（§14.5）
 - 候補者への招待メール自動送信（MVP は管理者が手動でリンクを連絡）
 - 採点ルール（複数採点者の集計方法、選択式の自動採点など）→ **別途検討**。MVP では各採点者が問題ごとに点数・コメントを付けるだけの汎用モデルにしておく
 - コードのブラウザ内エディタ入力、GitHub URL による提出（MVP のソースコード提出は zip のみ）
 - 提出コードの実行・自動テスト、マルウェアスキャン
 - 期限処理バッチ失敗のアラーム（期限判定は書き込み時の条件チェックで担保されるため、バッチ失敗は表示上のステータスずれに留まる）
-- 管理 CLI の `candidate:import`（CSV 一括登録）と監査ログ（§8）。MVP では `candidate:add` を 1 人ずつ実行し、重要な操作は社内の台帳に残す
+- 管理 CLI の `candidate:import`（CSV 一括登録）。MVP では `candidate:add` を 1 人ずつ実行する。監査ログは Phase 2 で管理画面と同時に実装する（§14.4）
 
 ---
 
 ## 2. アクター・ロール
 
-| ロール      | 説明                                                                                                               | 利用手段                                                              |
-| ----------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| `candidate` | 候補者。自分に割り当てられた課題のみ閲覧・回答可能                                                                 | 画面 `/login`                                                         |
-| `grader`    | 採点者。自分に割り当てられた受験（提出済み）のみ閲覧・採点可能。**候補者の氏名は見えるがメールアドレスは見えない** | 画面 `/grader/login`                                                  |
-| 管理者      | 候補者・採点者・受験・割り当ての管理                                                                               | **CLI スクリプト**（AWS の IAM 認証で実行。Cognito ユーザーではない） |
+| ロール             | 説明                                                                                                               | 利用手段                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `candidate`        | 候補者。自分に割り当てられた課題のみ閲覧・回答可能                                                                 | 画面 `/login`                                                         |
+| `grader`           | 採点者。自分に割り当てられた受験（提出済み）のみ閲覧・採点可能。**候補者の氏名は見えるがメールアドレスは見えない** | 画面 `/grader/login`                                                  |
+| スーパー管理者     | すべての管理操作（個人データの削除を含む）                                                                         | **CLI スクリプト**（AWS の IAM 認証で実行。Cognito ユーザーではない） |
+| `admin`（Phase 2） | 管理者。日常の運用（登録・課題・受験・割り当て・結果出力）。採点者と兼任できる（§14）                              | 画面 `/admin/login`                                                   |
 
-画面利用者のロールは Cognito User Pool の **グループ**（`candidate` / `grader`）で表現し、トークンの `cognito:groups` クレームで API 側が認可する。
+画面利用者のロールは Cognito User Pool の **グループ**（`candidate` / `grader`、Phase 2 で `admin`）で表現し、トークンの `cognito:groups` クレームで API 側が認可する。Phase 2 では 1 人が `grader` と `admin` を兼ねられる（§14.2）。
 
 ---
 
@@ -65,7 +67,7 @@
 
 - **フルサーバーレス**：常時起動コストを避け、利用頻度が低く波のある採用業務に合わせる
 - **認証は自前実装しない**：Cognito のネイティブ「パスワードレス（Email OTP）」を利用
-- **管理操作は CLI**：管理者は IAM 権限で AWS SDK を直接呼ぶ。管理用 API・管理画面を作らないことで MVP の攻撃面と実装量を減らす
+- **管理操作は CLI**：管理者は IAM 権限で AWS SDK を直接呼ぶ。管理用 API・管理画面を作らないことで MVP の攻撃面と実装量を減らす。**Phase 2 で管理者ロールと管理画面を追加し、CLI はスーパー管理者用として残す**（§14）
 - **業務ロジックは共通化**：受験発行・状態遷移などのルールは `packages/core` に置き、Lambda と CLI の両方から使う（CLI だけルールが異なる、を防ぐ）
 - **IaC は AWS CDK（TypeScript）**
 
@@ -107,7 +109,7 @@ flowchart LR
 | DB           | DynamoDB（オンデマンド）                                                      | 低トラフィック・スキーマ単純・運用不要                                                                            |
 | 提出ファイル | S3（非公開）+ 署名付き URL                                                    | Lambda を経由せずブラウザから直接アップロード／ダウンロード（Lambda のペイロード上限回避）                        |
 | 期限処理     | EventBridge Scheduler + Lambda                                                | 期限切れ受験を未提出（EXPIRED）へ遷移。厳密な期限判定は書き込み時の条件チェックで担保し、バッチは状態の後片付け役 |
-| 管理操作     | Node.js CLI（`scripts/admin`）                                                | 管理画面不要との方針による                                                                                        |
+| 管理操作     | Node.js CLI（`scripts/admin`）                                                | 管理画面不要との方針による（MVP）。Phase 2 で管理画面を追加し、CLI はスーパー管理者用に残す（§14）                |
 | IaC          | AWS CDK（TypeScript）                                                         | 言語統一                                                                                                          |
 
 ---
@@ -157,7 +159,8 @@ sequenceDiagram
 - API Gateway の JWT Authorizer で署名・有効期限・`client_id` を検証
 - Lambda ミドルウェアで `cognito:groups` を見てルート単位に認可
 - **リソース単位の認可**（候補者は自分の受験のみ、採点者は自分に割り当てのある受験のみ）を必ずサーバー側で実施
-- 管理者は Cognito に存在しない。CLI 実行用の IAM ロール（Cognito 管理操作・DynamoDB 読み書き・S3 読み取り）を CDK で作成し、管理者のみ引き受け可能にする
+- スーパー管理者は Cognito に存在しない。CLI 実行用の IAM ロール（Cognito 管理操作・DynamoDB 読み書き・S3 読み取り）を CDK で作成し、スーパー管理者のみ引き受け可能にする（未実装）
+- Phase 2 の管理者（`admin`）の認可は §14.3
 
 ---
 
@@ -236,15 +239,17 @@ erDiagram
   ASSIGNMENT ||--o| GRADE : "採点結果"
 ```
 
-| エンティティ    | PK                    | SK                   | 主な属性                                                                                                                              | GSI                                                                                 |
-| --------------- | --------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| User            | `USER#<sub>`          | `PROFILE`            | email, name, role, disabled, createdAt                                                                                                | GSI1: `EMAIL#<email>` / `USER`                                                      |
-| Exam            | `EXAM#<examId>`       | `META`               | title, latestVersion                                                                                                                  |                                                                                     |
-| ExamVersion     | `EXAM#<examId>`       | `V#<version>`        | 課題定義全体（intro, questions[] 本文含む）, publishedAt                                                                              |                                                                                     |
-| Attempt（受験） | `ATTEMPT#<attemptId>` | `META`               | candidateSub, **candidateName**（非正規化）, examId, examVersion, status, issuedAt, **deadlineAt**, startedAt, submittedAt, expiredAt | GSI1: `CAND#<sub>` / `ATTEMPT#<issuedAt>`、GSI2: `STATUS#<status>` / `<deadlineAt>` |
-| Answer          | `ATTEMPT#<attemptId>` | `ANS#<qid>`          | type, content（§5.1）, updatedAt, version（楽観ロック）                                                                               |                                                                                     |
-| Assignment      | `ATTEMPT#<attemptId>` | `ASSIGN#<graderSub>` | graderName, assignedAt, status(ASSIGNED/DRAFT/DONE)                                                                                   | GSI1: `GRADER#<sub>` / `ASSIGN#<assignedAt>`                                        |
-| Grade           | `ATTEMPT#<attemptId>` | `GRADE#<graderSub>`  | items: {qid: {score?, comment?}}, overallComment, finalizedAt                                                                         |                                                                                     |
+| エンティティ         | PK                    | SK                   | 主な属性                                                                                                                              | GSI                                                                                 |
+| -------------------- | --------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| User                 | `USER#<sub>`          | `PROFILE`            | email, name, role（Phase 2 で `roles: Role[]`。§14.2）, disabled, createdAt                                                           | GSI1: `EMAIL#<email>` / `USER`                                                      |
+| Exam                 | `EXAM#<examId>`       | `META`               | title, latestVersion                                                                                                                  |                                                                                     |
+| ExamVersion          | `EXAM#<examId>`       | `V#<version>`        | 課題定義全体（intro, questions[] 本文含む）, publishedAt                                                                              |                                                                                     |
+| Attempt（受験）      | `ATTEMPT#<attemptId>` | `META`               | candidateSub, **candidateName**（非正規化）, examId, examVersion, status, issuedAt, **deadlineAt**, startedAt, submittedAt, expiredAt | GSI1: `CAND#<sub>` / `ATTEMPT#<issuedAt>`、GSI2: `STATUS#<status>` / `<deadlineAt>` |
+| Answer               | `ATTEMPT#<attemptId>` | `ANS#<qid>`          | type, content（§5.1）, updatedAt, version（楽観ロック）                                                                               |                                                                                     |
+| Assignment           | `ATTEMPT#<attemptId>` | `ASSIGN#<graderSub>` | graderName, assignedAt, status(ASSIGNED/DRAFT/DONE)                                                                                   | GSI1: `GRADER#<sub>` / `ASSIGN#<assignedAt>`                                        |
+| Grade                | `ATTEMPT#<attemptId>` | `GRADE#<graderSub>`  | items: {qid: {score?, comment?}}, overallComment, finalizedAt                                                                         |                                                                                     |
+| ExamDraft（Phase 2） | `EXAM#<examId>`       | `DRAFT`              | 編集中の課題定義, version（楽観ロック）, updatedAt, updatedBy（§14.5）                                                                |                                                                                     |
+| AuditLog（Phase 2）  | `AUDIT#<yyyymm>`      | `<timestamp>#<uuid>` | actor, action, target, detail, status（§14.4）                                                                                        |                                                                                     |
 
 - 受験 1 件に回答・割り当て・採点を同一 PK でぶら下げ、1 クエリで全体を取得
 - 課題定義は 1 版 1 アイテム（400KB 制約内に収まる想定。超える場合は本文を S3 に逃がす）
@@ -295,7 +300,7 @@ stateDiagram-v2
 
 ## 7. API 設計
 
-ベースパス `/api`。全エンドポイント JWT 必須（Authorizer）。管理系 API は持たない（CLI が直接 AWS を操作）。
+ベースパス `/api`。全エンドポイント JWT 必須（Authorizer）。MVP では管理系 API は持たない（CLI が直接 AWS を操作）。Phase 2 の管理者 API は §14.6。
 
 ### 7.1 共通
 
@@ -345,23 +350,24 @@ stateDiagram-v2
 
 `npm run admin -- <command>` で実行。AWS プロファイル（管理者用 IAM ロール）と環境（`--env dev|prod`）を指定する。
 
-| コマンド                                             | 内容                                                                                    |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `candidate:add --email --name`                       | 候補者登録（Cognito ユーザー作成 + グループ + User 保存）                               |
-| `candidate:import --csv`                             | CSV 一括登録（**後続フェーズ**）                                                        |
-| `candidate:disable --email`                          | 無効化                                                                                  |
-| `grader:add --email --name` / `grader:disable`       | 採点者登録・無効化                                                                      |
-| `exam:publish --dir exams/<examId>`                  | 課題定義の検証・投入（新しい版を作成）                                                  |
-| `exam:list`                                          | 課題と版の一覧                                                                          |
-| `attempt:issue --email --exam --deadline YYYY-MM-DD` | 受験発行（最新版で発行、期限＝指定日 23:59 JST）                                        |
-| `attempt:extend --attempt --deadline YYYY-MM-DD`     | 期限延長（`EXPIRED` からの復帰を含む）                                                  |
-| `attempt:cancel --attempt`                           | 取消（未着手・受験中のみ。期限切れ・提出済み以降は不可）                                |
-| `attempt:assign --attempt --grader <email>...`       | 採点者割り当て（複数指定可。`EXPIRED` / `CANCELED` は不可）                             |
-| `attempt:list [--status]`                            | 受験一覧（進捗・期限・採点状況）                                                        |
-| `result:export --exam [--out results.csv]`           | 採点結果の CSV 出力（採点者別の問題ごとの点数・コメント）                               |
-| `user:purge --email`                                 | 個人データ削除（Cognito・DynamoDB・S3）。候補者のみ・採点済みか取消・期限切れの受験のみ |
+| コマンド                                              | 内容                                                                                    |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `candidate:add --email --name`                        | 候補者登録（Cognito ユーザー作成 + グループ + User 保存）                               |
+| `candidate:import --csv`                              | CSV 一括登録（**後続フェーズ**）                                                        |
+| `candidate:disable --email`                           | 無効化                                                                                  |
+| `grader:add --email --name` / `grader:disable`        | 採点者登録・無効化                                                                      |
+| `exam:publish --dir exams/<examId>`                   | 課題定義の検証・投入（新しい版を作成）                                                  |
+| `exam:list`                                           | 課題と版の一覧                                                                          |
+| `attempt:issue --email --exam --deadline YYYY-MM-DD`  | 受験発行（最新版で発行、期限＝指定日 23:59 JST）                                        |
+| `attempt:extend --attempt --deadline YYYY-MM-DD`      | 期限延長（`EXPIRED` からの復帰を含む）                                                  |
+| `attempt:cancel --attempt`                            | 取消（未着手・受験中のみ。期限切れ・提出済み以降は不可）                                |
+| `attempt:assign --attempt --grader <email>...`        | 採点者割り当て（複数指定可。`EXPIRED` / `CANCELED` は不可）                             |
+| `attempt:list [--status]`                             | 受験一覧（進捗・期限・採点状況）                                                        |
+| `result:export --exam [--out results.csv]`            | 採点結果の CSV 出力（採点者別の問題ごとの点数・コメント）                               |
+| `user:purge --email`                                  | 個人データ削除（Cognito・DynamoDB・S3）。候補者のみ・採点済みか取消・期限切れの受験のみ |
+| `admin:add --email [--name]` / `admin:remove --email` | 管理者の権限の付与・削除（Phase 2。採点者への付与、または新規登録）                     |
 
-- （**後続フェーズ**）CLI の操作はすべて実行者（IAM プリンシパル）・内容を DynamoDB の監査ログ（`AUDIT#<yyyymm>`）に残す。MVP では Cognito の操作のみ CloudTrail に残り、DynamoDB・S3 のデータ操作は残らないため、運用で台帳に記録する（[runbook.md](runbook.md) 5 章）
+- （**Phase 2**）CLI の変更操作はすべて実行者（IAM プリンシパル）・内容を DynamoDB の監査ログ（`AUDIT#<yyyymm>`）に残す（§14.4）。MVP では Cognito の操作のみ CloudTrail に残り、DynamoDB・S3 のデータ操作は残らないため、運用で台帳に記録する（[runbook.md](runbook.md) 5 章）
 - 本番操作時は確認プロンプトを出す
 
 ---
@@ -381,6 +387,7 @@ stateDiagram-v2
 
 - ログイン画面は 2 つに分けるが、内部実装は共通コンポーネント
 - ログイン後、`/me` のロールと画面種別が一致しなければ拒否
+- Phase 2 の管理画面（`/admin/*`）は §14.7
 
 ---
 
@@ -426,23 +433,29 @@ stateDiagram-v2
 
 ### 11.1 確定済み
 
-| #   | 論点                 | 決定                                                            |
-| --- | -------------------- | --------------------------------------------------------------- |
-| D1  | 受験期限             | 管理者が受験毎に **期限日（日付）** を指定。当日 23:59 JST まで |
-| D2  | 回答形式             | 記述・選択・ソースコード提出（**zip のみ**、20MB 上限）         |
-| D3  | 採点者数             | 複数。採点の集計ルールは別途検討                                |
-| D4  | 採点者への候補者情報 | 氏名は表示、メールは非表示                                      |
-| D5  | 管理操作             | CLI スクリプトで可（管理画面なし）                              |
-| D6  | メール送信元ドメイン | 別途決定（決定までは dev の SES サンドボックスで開発）          |
-| D7  | 期限到来時の扱い     | **未提出（EXPIRED）**。自動提出はしない。保存済み回答は保持     |
+| #   | 論点                 | 決定                                                                                                  |
+| --- | -------------------- | ----------------------------------------------------------------------------------------------------- |
+| D1  | 受験期限             | 管理者が受験毎に **期限日（日付）** を指定。当日 23:59 JST まで                                       |
+| D2  | 回答形式             | 記述・選択・ソースコード提出（**zip のみ**、20MB 上限）                                               |
+| D3  | 採点者数             | 複数。採点の集計ルールは別途検討                                                                      |
+| D4  | 採点者への候補者情報 | 氏名は表示、メールは非表示                                                                            |
+| D5  | 管理操作             | MVP は CLI スクリプト（管理画面なし）。Phase 2 で管理画面を追加（D8）                                 |
+| D6  | メール送信元ドメイン | 別途決定（決定までは dev の SES サンドボックスで開発）                                                |
+| D7  | 期限到来時の扱い     | **未提出（EXPIRED）**。自動提出はしない。保存済み回答は保持                                           |
+| D8  | 管理者ロール         | Cognito の `admin` と管理画面を追加（Phase 2）。IAM で CLI を実行する管理者はスーパー管理者として残す |
+| D9  | 管理者の操作範囲     | 日常の運用すべて。個人データの削除はスーパー管理者のみ                                                |
+| D10 | ロールの兼任         | `grader` と `admin` は兼任できる。`candidate` は兼ねない                                              |
+| D11 | 管理者の権限の付与   | 管理者同士で付与・削除できる（自分自身は外せない）                                                    |
+| D12 | 課題の登録           | 画面で作成・編集（下書き → 公開で新しい版）                                                           |
 
 ### 11.2 要確認（実装は仮置きで進行可能）
 
-| #   | 論点                                    | 仮置き                                     |
-| --- | --------------------------------------- | ------------------------------------------ |
-| Q5  | 候補者 1 人に複数課題を出すことはあるか | モデルは対応済み、UI は一覧から選択        |
-| Q6  | 画面のカスタムドメイン                  | ACM で発行（送信元ドメインと合わせて決定） |
-| Q7  | 候補者データの保持期間                  | 選考終了後 N か月で `user:purge`（運用）   |
+| #   | 論点                                    | 仮置き                                        |
+| --- | --------------------------------------- | --------------------------------------------- |
+| Q5  | 候補者 1 人に複数課題を出すことはあるか | モデルは対応済み、UI は一覧から選択           |
+| Q6  | 画面のカスタムドメイン                  | ACM で発行（送信元ドメインと合わせて決定）    |
+| Q7  | 候補者データの保持期間                  | 選考終了後 N か月で `user:purge`（運用）      |
+| Q8  | 管理者の多要素認証                      | メール OTP のみ。必要なら管理者に TOTP を追加 |
 
 ---
 
@@ -471,12 +484,147 @@ haccoli/
 
 ## 13. 実装ステップ案
 
-| Step | 内容                                                                                          | 完了条件                         |
-| ---- | --------------------------------------------------------------------------------------------- | -------------------------------- |
-| 0    | AWS アカウント準備、SES（dev はサンドボックス）                                               | 開発開始可能                     |
-| 1    | モノレポ雛形、CDK で Cognito（Email OTP）+ SES + SPA 配信、CLI `candidate:add` / `grader:add` | dev で OTP ログインできる        |
-| 2    | DynamoDB・API 基盤（JWT 認可・ロール/所有者チェック）、`/me`                                  | ロール別にログイン画面が振り分く |
-| 3    | 課題定義スキーマ・`exam:publish`・`attempt:issue`、候補者の回答（記述/選択）・途中保存・提出  | 候補者が受験〜提出まで完了       |
-| 4    | zip 提出（S3 署名付き URL）、期限処理バッチ（EXPIRED 遷移）・`attempt:extend`                 | 期限・全回答形式が動く           |
-| 5    | `attempt:assign`、採点画面（下書き・確定）、`attempt:list` / `result:export`                  | 一連の業務フローが通る           |
-| 6    | 監視（最小構成のアラーム 2 種、§10）、送信元ドメイン確定後に prod 構築、運用手順書            | 本番リリース                     |
+| Step | 内容                                                                                                                               | 完了条件                                      |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| 0    | AWS アカウント準備、SES（dev はサンドボックス）                                                                                    | 開発開始可能                                  |
+| 1    | モノレポ雛形、CDK で Cognito（Email OTP）+ SES + SPA 配信、CLI `candidate:add` / `grader:add`                                      | dev で OTP ログインできる                     |
+| 2    | DynamoDB・API 基盤（JWT 認可・ロール/所有者チェック）、`/me`                                                                       | ロール別にログイン画面が振り分く              |
+| 3    | 課題定義スキーマ・`exam:publish`・`attempt:issue`、候補者の回答（記述/選択）・途中保存・提出                                       | 候補者が受験〜提出まで完了                    |
+| 4    | zip 提出（S3 署名付き URL）、期限処理バッチ（EXPIRED 遷移）・`attempt:extend`                                                      | 期限・全回答形式が動く                        |
+| 5    | `attempt:assign`、採点画面（下書き・確定）、`attempt:list` / `result:export`                                                       | 一連の業務フローが通る                        |
+| 6    | 監視（最小構成のアラーム 2 種、§10）、送信元ドメイン確定後に prod 構築、運用手順書                                                 | 本番リリース                                  |
+| 7    | 管理者ロールの土台：`roles` への移行、`admin` グループ、`admin:add` / `admin:remove`、管理者 API の Lambda と認可、監査ログ（§14） | 管理者が API を呼べ、変更操作が監査ログに残る |
+| 8    | 管理画面：利用者・受験・割り当て・採点結果・監査ログ（§14.7）                                                                      | 課題の登録以外を画面で運用できる              |
+| 9    | 管理画面：課題の作成・編集（下書き・プレビュー・公開。§14.5）                                                                      | 課題を画面で作成・公開できる                  |
+
+---
+
+## 14. 管理者ロールと管理画面（Phase 2）
+
+MVP は管理操作を CLI に限定していた（§3.1）。本番運用で、AWS の権限を持たない担当者も日常の運用を行えるよう、Cognito の **管理者（`admin`）** と管理画面を追加する。AWS の IAM で CLI を実行する従来の管理者は **スーパー管理者** と呼ぶ。
+
+### 14.1 ロールと操作の範囲
+
+| 操作                                  | スーパー管理者（CLI） | 管理者（画面） | 採点者 | 候補者 |
+| ------------------------------------- | :-------------------: | :------------: | :----: | :----: |
+| 候補者・採点者の登録・無効化          |           ○           |       ○        |        |        |
+| 管理者の権限の付与・削除              |           ○           |    ○（※1）     |        |        |
+| 課題の作成・編集・公開                |  ○（`exam:publish`）  |       ○        |        |        |
+| 受験の発行・期限延長・取消            |           ○           |       ○        |        |        |
+| 採点者の割り当て                      |           ○           |       ○        |        |        |
+| 進み具合・回答・採点結果の閲覧        |           ○           |       ○        |        |        |
+| 採点結果の CSV 出力（個人情報を含む） |           ○           |       ○        |        |        |
+| 監査ログの閲覧                        |           ○           |       ○        |        |        |
+| 個人データの削除（`user:purge`）      |           ○           |                |        |        |
+| 採点                                  |                       |                |   ○    |        |
+| 受験                                  |                       |                |        |   ○    |
+
+- ※1 管理者は、採点者・管理者のアカウントに管理者の権限を付与・削除できる。管理者がいなくなるのを防ぐため、画面からは次の操作をできなくする
+  - 自分自身の `admin` を外す・自分自身を無効化する
+  - **有効な管理者が最後の 1 人のとき**、その人の `admin` を外す・無効化する（管理者同士で互いに外し合っても 0 人にならない）
+  - 管理者がいなくなっても、スーパー管理者が CLI で付与できる
+- 個人データの削除は元に戻せないため、スーパー管理者のみとする
+- 管理者は候補者のメールアドレスを閲覧できる（受験の発行・連絡に必要）。採点者には引き続き見せない
+
+### 14.2 複数ロール
+
+- 1 人が複数のロールを持てる。認めるのは **`grader` と `admin` の組み合わせのみ**。`candidate` は他のロールと兼ねない（社外の候補者に社内の権限を付けない）
+- User の `role` を **`roles: Role[]`** に変える（§6.1）。既存データは Step 7 のデプロイ時に **一括で移行** する（スーパー管理者が CLI で実行。`role` → `roles: [role]`）。読み込み側は、移行漏れに備えて `role` しかないアイテムも `[role]` として扱う
+- **最後のロールは外せない**。どのロールも持たない有効なユーザー（どの画面にも入れない）を作らないため。利用を止めるときは無効化する。`admin:add` で新規登録した人は `roles: [admin]` になる
+- Cognito のグループも複数付与する（`grader` と `admin`）
+- `role` から `roles` への変更に合わせて直す箇所
+  - core：ロールの判定（`assignGraders` の採点者チェック、`issueAttempt` の候補者チェック、`planPurge` の候補者チェック）、`registerUser`、`listUsers` の絞り込み（`contains(roles, :r)`）
+  - API：`AuthUser.role` → `roles`、`requireRole`（含むかで判定）、`/me`
+  - web：ロールと画面の対応（`ROLE_ROUTES`）、ログイン後のロールの判定
+  - CLI：`candidate:list`・`grader:list` の表示
+- `/me` は `roles` を返す。ログイン画面は今と同じく画面ごとに分け（`/login`・`/grader/login`・`/admin/login`）、その画面のロールを持たなければ拒否する。両方を持つ人は、それぞれのログイン画面から入る
+
+### 14.3 認可
+
+- API は **トークンの `cognito:groups` と DynamoDB の `roles` の両方** に、そのルートのロールがあるときだけ通す（今の `role` の照合を `roles` に拡張する）
+  - 付与：グループはトークンの発行時に入るため、**次にトークンが発行されたとき（ログイン、またはリフレッシュ）から有効**
+  - 削除・無効化：DynamoDB を毎回照合するため、**即時に無効**（発行済みのトークンが有効期限内でも通さない）
+- 両方がそろわないと通さないため、途中で片方だけ成功しても権限は残らない。そのうえで順序を次のように決める
+  - 付与：Cognito（グループ）→ DynamoDB（`roles`）。DynamoDB で失敗したら Cognito を戻す（登録の `registerUser` と同じく、Cognito を先に作り、失敗したら Cognito を戻す）
+  - 削除：DynamoDB → Cognito。DynamoDB を先に変えるので、その時点で即時に無効になる。Cognito で失敗しても権限は残らず、再実行でそろえる
+- **管理者 API は別の Lambda に分ける**。次の権限は管理者 API の Lambda だけに与え、候補者・採点者の API の Lambda の権限は今のまま（Scan なし）にする
+  - Cognito のユーザー管理（`AdminCreateUser`・`AdminAddUserToGroup`・`AdminRemoveUserFromGroup`・`AdminDisableUser` など）
+  - DynamoDB の `Scan`（利用者・課題・受験の一覧）と GSI2 の `Query`（状態ごとの受験）。一覧の API は、Scan とフィルタで空のページを返さないよう、指定件数に達するか最後まで読み進めてから返す
+- 候補者・採点者の API から管理者の操作に到達できないことを、ルート単位の認可テストで固定する
+
+### 14.4 監査ログ
+
+管理画面と同時に実装する（§8 で後続フェーズとしていたもの）。管理者（画面）とスーパー管理者（CLI）の **すべての変更操作** を記録する。
+
+| 項目   | 内容                                                                                                 |
+| ------ | ---------------------------------------------------------------------------------------------------- |
+| キー   | PK `AUDIT#<yyyymm>`、SK `<timestamp>#<uuid>`                                                         |
+| 実行者 | 管理者は `sub`・氏名、スーパー管理者は IAM のプリンシパル（`sts:GetCallerIdentity` の ARN）          |
+| 操作   | `user.add`・`user.roles`・`user.disable`・`exam.save`・`exam.publish`・`attempt.issue` など          |
+| 対象   | 利用者の `sub`・受験 ID・課題 ID など                                                                |
+| 内容   | 変更の要点（例: 付与したロール、新しい期限）。**回答・採点の本文や候補者のメールアドレスは含めない** |
+
+- 記録は `packages/core` の各操作で行い、API と CLI で漏れがないようにする。書き込むタイミングは操作の種類で分ける
+  - **DynamoDB だけの操作**（受験の発行・延長・取消・割り当て、課題の保存・公開など）：操作と同じトランザクションで書く。記録できなければ操作も行われない
+  - **Cognito・S3 にまたがる操作**（登録・ロールの変更・無効化・個人データの削除）：実行前に `status: STARTED` で書き、終わったら `SUCCEEDED` / `FAILED` に更新する。実行前の書き込みに失敗したら操作しない。最後の更新に失敗した場合は `STARTED` のまま残るので、一覧で「結果不明」と表示し、対象の状態を確かめる
+- 個人データの削除（`user:purge`）でも、監査ログには削除した事実（対象の `sub`・実行者・日時）が残る。メールアドレスは残さない
+- 保持期間は当面無期限（件数が少ないため）。必要になれば TTL を設定する
+- 管理画面に一覧（月ごと・操作の種類で絞り込み）を設ける
+
+### 14.5 課題の作成・編集
+
+- 課題は画面で作成・編集する。編集中の内容は **下書き**（`EXAM#<examId>` / `DRAFT`、楽観ロック用の `version` を持つ）に保存し、「公開」で新しい版（`V#<version>`）を作る。版の考え方は今と同じで、発行済みの受験には影響しない（§5）
+- 新しい課題は、下書きを最初に保存したときに `META` も作る（`latestVersion` なし）。課題の一覧（`listExams` は `META` を読む）に、未公開の課題も出すため。未公開の課題には受験を発行できない（`issueAttempt` は公開済みの版がなければ拒否する）
+- 公開時の検証は `exam:publish` と同じ（`parseExamDefinition`）。問題の追加・削除・並べ替え、回答形式（記述・選択・ファイル）、選択肢、配点・採点基準を編集できる。本文は Markdown で、候補者・採点者の画面と同じ表示でプレビューする
+- `examId` は作成時に決め、変更できない
+- 画面で編集するようになった後は、**DynamoDB の最新版を正** とする。リポジトリの `exams/` はサンプルと初期投入用に残す。CLI の `exam:publish` で投入すると、画面で編集した内容を上書きした新しい版になるため、手順書で注意する
+
+### 14.6 API（`/api/admin/*`、group: admin）
+
+| Method | Path                                                     | 説明                                                        |
+| ------ | -------------------------------------------------------- | ----------------------------------------------------------- |
+| GET    | `/admin/users?role=`                                     | 利用者の一覧                                                |
+| POST   | `/admin/users`                                           | 登録（候補者、または採点者・管理者）                        |
+| PUT    | `/admin/users/{sub}/roles`                               | 採点者・管理者のロールの付与・削除（自分の `admin` は不可） |
+| POST   | `/admin/users/{sub}/disable`                             | 無効化（自分自身は不可）                                    |
+| GET    | `/admin/exams`                                           | 課題の一覧（最新版・下書きの有無）                          |
+| GET    | `/admin/exams/{examId}`                                  | 最新版と下書き                                              |
+| PUT    | `/admin/exams/{examId}/draft`                            | 下書きの保存（作成を含む。楽観ロック）                      |
+| POST   | `/admin/exams/{examId}/publish`                          | 下書きを検証して新しい版として公開                          |
+| GET    | `/admin/attempts?status=&examId=`                        | 受験の一覧（進み具合）                                      |
+| POST   | `/admin/attempts`                                        | 受験の発行                                                  |
+| GET    | `/admin/attempts/{attemptId}`                            | 受験の詳細（回答・割り当て・各採点者の採点）                |
+| POST   | `/admin/attempts/{attemptId}/extend`                     | 期限の変更                                                  |
+| POST   | `/admin/attempts/{attemptId}/cancel`                     | 取消                                                        |
+| POST   | `/admin/attempts/{attemptId}/assign`                     | 採点者の割り当て                                            |
+| POST   | `/admin/attempts/{attemptId}/answers/{qid}/download-url` | 提出ファイルの署名付き GET 発行                             |
+| GET    | `/admin/exams/{examId}/results.csv`                      | 採点結果の CSV（`result:export` と同じ形式）                |
+| GET    | `/admin/audit?month=&action=`                            | 監査ログ                                                    |
+
+- 業務ルールは CLI と同じ `packages/core` の関数を使う（例: 期限切れ・取消の受験には割り当てられない）
+- 一覧はページングする（`attempt:list` は全件取得のため、件数が増えたら API 側で区切る）
+
+### 14.7 画面
+
+```
+/admin/login               管理者ログイン（メール → パスコード）
+/admin                     ダッシュボード（状態ごとの受験数、採点待ち・期限が近い受験）
+/admin/users               利用者の一覧・登録・ロールの付与と削除・無効化
+/admin/exams               課題の一覧・新規作成
+/admin/exams/:examId       課題の編集（下書き保存・プレビュー・公開・版の履歴）
+/admin/attempts            受験の一覧（絞り込み）・発行
+/admin/attempts/:attemptId 受験の詳細（回答・採点の閲覧、期限変更・取消・採点者の割り当て）
+/admin/results             採点結果の CSV 出力
+/admin/audit               監査ログ
+```
+
+- 取消・無効化・権限の削除など元に戻せない操作は、確認ダイアログを出す
+- CSV の出力は個人情報を含むため、出力時に注意を表示し、監査ログに残す
+
+### 14.8 実装の段階
+
+1. **Step 7（管理者ロールの土台）**：`roles` への移行、Cognito の `admin` グループ、CLI の `admin:add` / `admin:remove`、管理者 API の Lambda と認可、監査ログ（CLI の変更操作を含む）
+2. **Step 8（管理画面：日常の運用）**：利用者・受験・割り当て・採点結果・監査ログの画面
+3. **Step 9（管理画面：課題の作成・編集）**：下書き・プレビュー・公開
+
+Step 7 だけでも、CLI の操作に監査ログが付く。Step 8 までで、課題の登録以外は画面で運用できる（課題は Step 9 まで CLI の `exam:publish`）。
