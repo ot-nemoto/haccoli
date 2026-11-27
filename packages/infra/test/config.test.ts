@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { App } from "aws-cdk-lib";
@@ -33,12 +33,30 @@ describe("loadConfig（sesVerifiedDomain）", () => {
     expect(
       loadConfig(ctx({ ...base, sesVerifiedDomain: "recruit.example.jp" })).sesVerifiedDomain,
     ).toBe("recruit.example.jp");
-    process.env.HACCOLI_SES_VERIFIED_DOMAIN = "env.example.jp";
-    expect(loadConfig(ctx(base)).sesVerifiedDomain).toBe("env.example.jp");
+    process.env.HACCOLI_SES_VERIFIED_DOMAIN = "recruit.example.jp";
+    expect(loadConfig(ctx(base)).sesVerifiedDomain).toBe("recruit.example.jp");
     // 空文字は未指定として環境変数に切り替える
     expect(loadConfig(ctx({ ...base, sesVerifiedDomain: "" })).sesVerifiedDomain).toBe(
-      "env.example.jp",
+      "recruit.example.jp",
     );
+  });
+
+  it("前後の空白・大文字小文字の違いは吸収し、それ以外の不一致はエラー", () => {
+    expect(
+      loadConfig(ctx({ ...base, sesVerifiedDomain: " Recruit.Example.JP " })).sesVerifiedDomain,
+    ).toBe("recruit.example.jp");
+    expect(() => loadConfig(ctx({ ...base, sesVerifiedDomain: "example.jp" }))).toThrow(
+      /一致しません/,
+    );
+    expect(() =>
+      loadConfig(
+        ctx({
+          ...base,
+          fromEmail: "a@mail.recruit.example.jp",
+          sesVerifiedDomain: "recruit.example.jp",
+        }),
+      ),
+    ).toThrow(/サブドメイン/);
   });
 
   it("空の環境変数は未指定として扱う", () => {
@@ -52,14 +70,17 @@ describe("Cognito の送信元（SES の ID）", () => {
   function sourceArn(values: Record<string, string>) {
     const distDir = mkdtempSync(join(tmpdir(), "haccoli-web-"));
     writeFileSync(join(distDir, "index.html"), "<!doctype html>");
-    const stack = new HaccoliStack(new App(), "Haccoli-dev", {
-      env: { account: "123456789012", region: "ap-northeast-1" },
-      webDistDir: distDir,
-      config: loadConfig(ctx(values)),
-    });
-    const pools = Template.fromStack(stack).findResources("AWS::Cognito::UserPool");
-    const arn = Object.values(pools)[0]?.Properties.EmailConfiguration.SourceArn;
-    return JSON.stringify(arn);
+    try {
+      const stack = new HaccoliStack(new App(), "Haccoli-dev", {
+        env: { account: "123456789012", region: "ap-northeast-1" },
+        webDistDir: distDir,
+        config: loadConfig(ctx(values)),
+      });
+      const pools = Template.fromStack(stack).findResources("AWS::Cognito::UserPool");
+      return JSON.stringify(Object.values(pools)[0]?.Properties.EmailConfiguration.SourceArn);
+    } finally {
+      rmSync(distDir, { recursive: true, force: true });
+    }
   }
 
   it("ドメインを指定するとドメインの ID、指定しなければアドレスの ID を使う", () => {

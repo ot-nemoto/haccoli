@@ -44,8 +44,10 @@ export function loadConfig(get: (key: string) => unknown): EnvConfig {
       "アラームの通知先が未指定です。-c alarmEmail=... または HACCOLI_ALARM_EMAIL を設定してください",
     );
   }
-  const sesVerifiedDomain =
-    (get("sesVerifiedDomain") as string | undefined) || process.env.HACCOLI_SES_VERIFIED_DOMAIN;
+  const sesVerifiedDomain = verifiedDomainOf(
+    fromEmail,
+    (get("sesVerifiedDomain") as string | undefined) || process.env.HACCOLI_SES_VERIFIED_DOMAIN,
+  );
   return {
     envName,
     fromEmail,
@@ -54,4 +56,20 @@ export function loadConfig(get: (key: string) => unknown): EnvConfig {
     ...(alarmEmail ? { alarmEmail } : {}),
     removalPolicy: envName === "prod" ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
   };
+}
+
+/**
+ * 送信元のドメイン認証。CDK は fromEmail の @ 以降との完全一致を求めるため、
+ * 空白・大文字小文字の違いは吸収し、それ以外の不一致（サブドメインを含む）はここでわかりやすく止める。
+ */
+function verifiedDomainOf(fromEmail: string, raw: string | undefined): string | undefined {
+  const domain = raw?.trim();
+  if (!domain) return undefined;
+  const fromDomain = fromEmail.split("@").pop() ?? "";
+  if (fromDomain.toLowerCase() !== domain.toLowerCase()) {
+    throw new Error(
+      `送信元アドレス（${fromEmail}）の @ 以降が sesVerifiedDomain（${domain}）と一致しません。サブドメインのアドレスは使えません`,
+    );
+  }
+  return fromDomain;
 }

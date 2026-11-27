@@ -70,15 +70,15 @@ npm run cdk -- deploy Haccoli-ci-dev -c env=dev -c ci=true
 
 リポジトリの Settings → Environments で `dev`（prod の場合は `prod`）を作成し、以下を設定する。
 
-| 種別                  | 名前                          | 値                                                                                                   |
-| --------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Variable              | `AWS_ROLE_ARN`                | 手順 2 の `DeployRoleArn`                                                                            |
-| Variable              | `HACCOLI_FROM_EMAIL`          | 手順 1 で検証した送信元アドレス                                                                      |
-| Variable（prod のみ） | `HACCOLI_ALARM_EMAIL`         | アラームの通知先（prod は必須。未設定だとデプロイが失敗する）                                        |
-| Variable（任意）      | `HACCOLI_SES_VERIFIED_DOMAIN` | 送信元をドメイン単位で SES に認証した場合のドメイン。`HACCOLI_FROM_EMAIL` はその配下のアドレスにする |
-| Variable（任意）      | `HACCOLI_REGION`              | 既定 `ap-northeast-1`                                                                                |
-| Deployment branches   | —                             | dev: `develop`、prod: `main` のみに制限                                                              |
-| Required reviewers    | —                             | prod は設定を推奨                                                                                    |
+| 種別                  | 名前                          | 値                                                                                                                                                  |
+| --------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable              | `AWS_ROLE_ARN`                | 手順 2 の `DeployRoleArn`                                                                                                                           |
+| Variable              | `HACCOLI_FROM_EMAIL`          | 手順 1 で検証した送信元アドレス                                                                                                                     |
+| Variable（prod のみ） | `HACCOLI_ALARM_EMAIL`         | アラームの通知先（prod は必須。未設定だとデプロイが失敗する）                                                                                       |
+| Variable（任意）      | `HACCOLI_SES_VERIFIED_DOMAIN` | 送信元をドメイン単位で SES に認証した場合のドメイン。`HACCOLI_FROM_EMAIL` は @ 以降がこのドメインと完全に一致するアドレスにする（サブドメイン不可） |
+| Variable（任意）      | `HACCOLI_REGION`              | 既定 `ap-northeast-1`                                                                                                                               |
+| Deployment branches   | —                             | dev: `develop`、prod: `main` のみに制限                                                                                                             |
+| Required reviewers    | —                             | prod は設定を推奨                                                                                                                                   |
 
 #### 4. デプロイ
 
@@ -103,6 +103,8 @@ npm run deploy -- Haccoli-dev -c env=dev
 
 # prod はアラームの通知先も必須
 export HACCOLI_ALARM_EMAIL=ops@example.com
+# 送信元をドメイン単位で認証している場合は、ドメインも必ず指定する（指定しないとアドレスの ID に切り替わる）
+export HACCOLI_SES_VERIFIED_DOMAIN=recruit.example.co.jp
 npm run deploy -- Haccoli-prod -c env=prod
 ```
 
