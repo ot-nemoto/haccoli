@@ -81,6 +81,7 @@ npm run admin -- -e <env> grader:disable    --email grader@example.com
 ```
 
 - 有効に戻すコマンドはありません。
+- DynamoDB を先に無効にし、その時点で API は使えなくなります。そのあと Cognito のユーザーを無効にします。途中で失敗した場合は、同じコマンドを再実行します。
 - 無効化した採点者には、新しく割り当てられません。
 - **採点者を無効化する前に、割り当て済みの採点がすべて確定していることを確かめます。** 受験が採点済み（`GRADED`）になるのは、割り当てた採点者の全員が確定したときです。割り当ての解除はできないため、未確定のまま無効化すると、別の採点者を追加しても受験は採点中（`GRADING`）のまま進みません。個人データの削除（2.8）もできなくなります。
 - 未確定のまま無効化してしまった場合は、その採点者を一時的に有効に戻し（5 章）、確定してもらってから無効化し直します。
@@ -204,14 +205,15 @@ npm run admin -- -e <env> audit:list --month 2026-11 --action attempt.issue
 
 ## 3. アラームへの対応
 
-prod には次の 4 つのアラームがあります。発生時と復旧時に、`HACCOLI_ALARM_EMAIL` のアドレスへ SNS からメールが届きます。dev にはアラームがないので、CloudWatch Logs で確かめます。
+prod には次の 5 つのアラームがあります。発生時と復旧時に、`HACCOLI_ALARM_EMAIL` のアドレスへ SNS からメールが届きます。dev にはアラームがないので、CloudWatch Logs で確かめます。
 
-| アラーム                          | 条件                                       | 影響                                          |
-| --------------------------------- | ------------------------------------------ | --------------------------------------------- |
-| `haccoli-prod-api-5xx`            | API の 5xx が 5 分間に 1 件以上            | 候補者が受験・提出できない可能性              |
-| `haccoli-prod-api-lambda-errors`  | API の Lambda のエラーが 5 分間に 1 件以上 | 同上（例外・タイムアウト）                    |
-| `haccoli-prod-ses-bounce-rate`    | SES のバウンス率が 4% 以上                 | 5% で審査、10% で送信停止（全員ログイン不可） |
-| `haccoli-prod-ses-complaint-rate` | SES の苦情率が 0.08% 以上                  | 0.1% で審査、0.5% で送信停止                  |
+| アラーム                           | 条件                                              | 影響                                                 |
+| ---------------------------------- | ------------------------------------------------- | ---------------------------------------------------- |
+| `haccoli-prod-api-5xx`             | API の 5xx が 5 分間に 1 件以上                   | 候補者が受験・提出できない可能性                     |
+| `haccoli-prod-api-lambda-errors`   | API の Lambda のエラーが 5 分間に 1 件以上        | 同上（例外・タイムアウト）                           |
+| `haccoli-prod-admin-lambda-errors` | 管理者 API の Lambda のエラーが 5 分間に 1 件以上 | 管理画面の操作が失敗する可能性（例外・タイムアウト） |
+| `haccoli-prod-ses-bounce-rate`     | SES のバウンス率が 4% 以上                        | 5% で審査、10% で送信停止（全員ログイン不可）        |
+| `haccoli-prod-ses-complaint-rate`  | SES の苦情率が 0.08% 以上                         | 0.1% で審査、0.5% で送信停止                         |
 
 ### 3.1 共通
 
@@ -221,11 +223,12 @@ prod には次の 4 つのアラームがあります。発生時と復旧時に
 
 ### 3.2 API 5xx・Lambda エラー
 
-API の 1 回の失敗で、2 つのアラームが同時に鳴ることがあります。まとめて 1 件として対応します。
+API の 1 回の失敗で、2 つのアラーム（5xx と Lambda のエラー）が同時に鳴ることがあります。まとめて 1 件として対応します。
 
-1. API の Lambda のロググループを調べます。
+1. API の Lambda のロググループを調べます。`haccoli-prod-admin-lambda-errors` のとき、または 5xx のルートが `/api/admin/` で始まるときは、管理者 API の Lambda（出力 `AdminApiFunctionName`）を調べます。
 
    ```bash
+   # 管理者 API のときは ApiFunctionName を AdminApiFunctionName にする
    fn=$(aws cloudformation describe-stacks --stack-name Haccoli-prod \
      --query "Stacks[0].Outputs[?OutputKey=='ApiFunctionName'].OutputValue" --output text)
    aws lambda get-function-configuration --function-name "$fn" \
