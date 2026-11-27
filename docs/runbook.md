@@ -292,7 +292,7 @@ prod は dev とは別の AWS アカウントに作ります。初回に 1 回�
 | 送信元メールドメイン   | 未定                    |
 | アラームの通知先       | 決定済み                |
 
-送信元ドメインを使うには、デプロイから `sesVerifiedDomain` を渡す必要があります（[#15](https://github.com/ot-nemoto/haccoli/issues/15)）。#15 を先に済ませます。
+送信元ドメインを使う場合は、`HACCOLI_FROM_EMAIL` をそのドメイン配下のアドレスにし、ドメインを `HACCOLI_SES_VERIFIED_DOMAIN` で渡します（4.4）。ドメインが一致しないとデプロイが失敗します。
 
 ### 4.1 SES の送信元ドメインを認証する
 
@@ -349,15 +349,15 @@ npm run cdk -- deploy Haccoli-ci-prod -c env=prod -c ci=true
 
 リポジトリの Settings → Environments に `prod` を作り、次を設定します。
 
-| 種別                | 名前                          | 値                                                                                             |
-| ------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------- |
-| Variable            | `AWS_ROLE_ARN`                | 4.3 の `DeployRoleArn`                                                                         |
-| Variable            | `HACCOLI_FROM_EMAIL`          | 送信元アドレス（4.1 のドメイン配下。例: `no-reply@recruit.example.co.jp`）                     |
-| Variable            | `HACCOLI_SES_VERIFIED_DOMAIN` | 4.1 のドメイン。**#15 のマージ後に設定する**（それまでは deploy.yml が読まないため効果がない） |
-| Variable            | `HACCOLI_ALARM_EMAIL`         | アラームの通知先                                                                               |
-| Variable（任意）    | `HACCOLI_REGION`              | 既定 `ap-northeast-1`。変える場合は 4.3 のブートストラップも同じリージョンで行う               |
-| Deployment branches | —                             | `main` のみ                                                                                    |
-| Required reviewers  | —                             | 管理者を設定する                                                                               |
+| 種別                | 名前                          | 値                                                                               |
+| ------------------- | ----------------------------- | -------------------------------------------------------------------------------- |
+| Variable            | `AWS_ROLE_ARN`                | 4.3 の `DeployRoleArn`                                                           |
+| Variable            | `HACCOLI_FROM_EMAIL`          | 送信元アドレス（4.1 のドメイン配下。例: `no-reply@recruit.example.co.jp`）       |
+| Variable            | `HACCOLI_SES_VERIFIED_DOMAIN` | 4.1 のドメイン（例: `recruit.example.co.jp`）                                    |
+| Variable            | `HACCOLI_ALARM_EMAIL`         | アラームの通知先                                                                 |
+| Variable（任意）    | `HACCOLI_REGION`              | 既定 `ap-northeast-1`。変える場合は 4.3 のブートストラップも同じリージョンで行う |
+| Deployment branches | —                             | `main` のみ                                                                      |
+| Required reviewers  | —                             | 管理者を設定する                                                                 |
 
 ### 4.5 デプロイする
 
