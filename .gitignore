@@ -7,3 +7,5 @@ packages/web/public/config.json
 cdk-outputs.json
 # 採点結果（個人情報を含む）
 *.csv
+packages/e2e/test-results/
+packages/e2e/playwright-report/
