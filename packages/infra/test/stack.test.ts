@@ -95,8 +95,12 @@ describe("DynamoDB", () => {
     template.hasOutput("AuditTableName", {});
   });
 
-  it("API・期限処理の Lambda の DynamoDB 権限は業務データのテーブルだけ（監査ログは管理者 API の Step 7-3）", () => {
-    const resources = Object.values(template.findResources("AWS::IAM::Policy")).flatMap((p) =>
+  it("API・期限処理の Lambda の DynamoDB 権限は業務データのテーブルだけ（監査ログは管理者 API のみ）", () => {
+    const resources = Object.values(
+      template.findResources("AWS::IAM::Policy", {
+        Properties: { PolicyName: Match.stringLikeRegexp("^Api(Handler|Expire)") },
+      }),
+    ).flatMap((p) =>
       p.Properties.PolicyDocument.Statement.filter((s: { Action: string | string[] }) =>
         [s.Action].flat().some((a) => a.startsWith("dynamodb:")),
       ).flatMap((s: { Resource: unknown }) => [s.Resource].flat()),
@@ -108,6 +112,93 @@ describe("DynamoDB", () => {
       expect(JSON.stringify(r)).toMatch(/"DataTable[0-9A-F]{8}"/);
       expect(JSON.stringify(r)).not.toContain("AuditTable");
     }
+  });
+});
+
+/** Lambda の実行ロールのポリシーの Statement（PolicyName の先頭で選ぶ） */
+function statementsOf(policyPrefix: string) {
+  const policies = template.findResources("AWS::IAM::Policy", {
+    Properties: { PolicyName: Match.stringLikeRegexp(`^${policyPrefix}`) },
+  });
+  expect(Object.keys(policies).length).toBeGreaterThan(0);
+  return Object.values(policies).flatMap(
+    (p) =>
+      p.Properties.PolicyDocument.Statement as { Action: string | string[]; Resource: unknown }[],
+  );
+}
+const actionsOf = (statements: { Action: string | string[] }[]) =>
+  statements.flatMap((s) => [s.Action].flat()).sort();
+
+describe("管理者 API（docs/design.md §14.3）", () => {
+  it("/api/admin/{proxy+} は管理者 API の Lambda に、それ以外は候補者・採点者の API の Lambda に送る", () => {
+    const routes = Object.values(template.findResources("AWS::ApiGatewayV2::Route"));
+    const keys = routes.map((r) => r.Properties.RouteKey).sort();
+    expect(keys).toEqual(["ANY /api/admin/{proxy+}", "ANY /api/{proxy+}"]);
+    const integrations = template.findResources("AWS::ApiGatewayV2::Integration");
+    const targetOf = (routeKey: string) => {
+      const route = routes.find((r) => r.Properties.RouteKey === routeKey);
+      const integrationId = JSON.stringify(route?.Properties.Target).match(
+        /"(ApiHttpApi[A-Za-z0-9]+)"/,
+      )?.[1];
+      return JSON.stringify(integrations[integrationId ?? ""]?.Properties.IntegrationUri);
+    };
+    expect(targetOf("ANY /api/admin/{proxy+}")).toMatch(/"ApiAdminHandler[0-9A-F]{8}"/);
+    expect(targetOf("ANY /api/{proxy+}")).toMatch(/"ApiHandler[0-9A-F]{8}"/);
+  });
+
+  it("候補者・採点者の API の Lambda には Scan・Cognito・監査ログの権限がない", () => {
+    const statements = statementsOf("ApiHandler");
+    const actions = actionsOf(statements);
+    expect(actions.filter((a) => a === "dynamodb:Scan" || a.startsWith("cognito-idp:"))).toEqual(
+      [],
+    );
+    expect(JSON.stringify(statements)).not.toContain("AuditTable");
+  });
+
+  it("管理者 API の Lambda の権限は、使う操作だけ（業務データ・監査ログとも削除なし）", () => {
+    const statements = statementsOf("ApiAdminHandler");
+    const on = (logicalId: RegExp) =>
+      actionsOf(statements.filter((s) => logicalId.test(JSON.stringify(s.Resource))));
+    expect(on(/"DataTable[0-9A-F]{8}"/)).toEqual([
+      "dynamodb:ConditionCheckItem",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:Query",
+      "dynamodb:Scan",
+      "dynamodb:UpdateItem",
+    ]);
+    // 監査ログ: 記録と一覧だけ。DeleteItem・BatchWriteItem などは与えない
+    expect(on(/"DataAuditTable[0-9A-F]{8}"/)).toEqual([
+      "dynamodb:PutItem",
+      "dynamodb:Query",
+      "dynamodb:UpdateItem",
+    ]);
+    expect(on(/"AuthUserPool[0-9A-F]{8}"/)).toEqual([
+      "cognito-idp:AdminAddUserToGroup",
+      "cognito-idp:AdminCreateUser",
+      "cognito-idp:AdminDeleteUser",
+      "cognito-idp:AdminDisableUser",
+      "cognito-idp:AdminRemoveUserFromGroup",
+      "cognito-idp:AdminSetUserPassword",
+    ]);
+    // ワイルドカードの操作・リソースを使わない
+    expect(actionsOf(statements).some((a) => a.includes("*"))).toBe(false);
+    for (const s of statements) {
+      for (const r of [s.Resource].flat()) expect(r).not.toBe("*");
+    }
+  });
+
+  it("管理者 API の Lambda に、テーブル名・監査ログのテーブル名・User Pool ID を渡す", () => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      Environment: {
+        Variables: Match.objectLike({
+          TABLE_NAME: Match.anyValue(),
+          AUDIT_TABLE_NAME: Match.anyValue(),
+          USER_POOL_ID: Match.anyValue(),
+        }),
+      },
+      Timeout: 25,
+    });
   });
 });
 

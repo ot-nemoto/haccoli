@@ -28,6 +28,7 @@ export class HaccoliStack extends Stack {
       userPool: auth.userPool,
       webClient: auth.webClient,
       table: data.table,
+      auditTable: data.auditTable,
       submissionsBucketName: submissionsBucketName(this, props.config.envName),
     });
     const web = new Web(this, "Web", {
@@ -61,6 +62,7 @@ export class HaccoliStack extends Stack {
         alarmEmail: props.config.alarmEmail,
         httpApi: api.httpApi,
         apiFunction: api.handler,
+        adminFunction: api.adminHandler,
       });
     }
 
@@ -69,6 +71,7 @@ export class HaccoliStack extends Stack {
     new CfnOutput(this, "TableName", { value: data.table.tableName });
     new CfnOutput(this, "AuditTableName", { value: data.auditTable.tableName });
     new CfnOutput(this, "ApiFunctionName", { value: api.handler.functionName });
+    new CfnOutput(this, "AdminApiFunctionName", { value: api.adminHandler.functionName });
     new CfnOutput(this, "ExpireFunctionName", { value: api.expireFunction.functionName });
     new CfnOutput(this, "SubmissionsBucket", { value: storage.submissions.bucketName });
     new CfnOutput(this, "WebUrl", { value: webOrigin });

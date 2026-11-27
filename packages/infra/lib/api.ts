@@ -20,6 +20,8 @@ export interface ApiProps {
   userPool: cognito.IUserPool;
   webClient: cognito.IUserPoolClient;
   table: dynamodb.ITableV2;
+  /** 監査ログのテーブル（管理者 API の Lambda だけが書き込む。docs/design.md §14.4） */
+  auditTable: dynamodb.ITableV2;
   /** 提出ファイルのバケット名（CloudFront との循環参照を避けるため名前で受け取る） */
   submissionsBucketName: string;
 }
@@ -31,6 +33,8 @@ export interface ApiProps {
 export class Api extends Construct {
   readonly httpApi: apigw.HttpApi;
   readonly handler: nodejs.NodejsFunction;
+  /** 管理者 API（/api/admin/*）の Lambda（docs/design.md §14.3） */
+  readonly adminHandler: nodejs.NodejsFunction;
   readonly expireFunction: nodejs.NodejsFunction;
 
   constructor(scope: Construct, id: string, props: ApiProps) {
@@ -48,7 +52,8 @@ export class Api extends Construct {
       timeout: Duration.seconds(25),
     });
     // 最小権限: 使う操作だけを付与し、機能追加に合わせて増やす。
-    // Scan・DeleteItem・BatchGet は付与しない（API から全件を読めないようにする）
+    // Scan・DeleteItem・BatchGet は付与しない（API から全件を読めないようにする）。
+    // Cognito のユーザー管理・監査ログのテーブルの権限も与えない（管理者 API の Lambda だけが持つ）
     this.handler.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
@@ -68,6 +73,56 @@ export class Api extends Construct {
         resources: [
           `arn:${Stack.of(this).partition}:s3:::${props.submissionsBucketName}/attempts/*`,
         ],
+      }),
+    );
+
+    // 管理者 API（§14.3・§14.6）。候補者・採点者の API とは別の Lambda にし、
+    // 管理の権限（Cognito のユーザー管理・Scan・監査ログの書き込み）はこの Lambda だけに与える
+    this.adminHandler = apiFunction(this, "AdminHandler", {
+      entry: "admin-lambda.ts",
+      environment: {
+        TABLE_NAME: props.table.tableName,
+        AUDIT_TABLE_NAME: props.auditTable.tableName,
+        USER_POOL_ID: props.userPool.userPoolId,
+      },
+      memorySize: 512,
+      timeout: Duration.seconds(25),
+    });
+    // 業務データ: 利用者の一覧（Scan）・登録（PutItem）・ロールと無効化の更新（UpdateItem）、
+    // 最後の管理者の確認（ConditionCheckItem。トランザクション）、メールアドレスでの検索（GSI1）。
+    // 状態ごとの受験の一覧（GSI2）は Step 8 で追加する。DeleteItem は与えない
+    this.adminHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:Scan",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+        ],
+        resources: [props.table.tableArn, `${props.table.tableArn}/index/GSI1`],
+      }),
+    );
+    // 監査ログ: 記録（PutItem・UpdateItem）と一覧（Query）のみ。削除させない（§14.4）
+    this.adminHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
+        resources: [props.auditTable.tableArn],
+      }),
+    );
+    // Cognito: 登録（作成・パスワード設定・作成の巻き戻し）、ロールのグループ、無効化
+    this.adminHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminDeleteUser",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+          "cognito-idp:AdminDisableUser",
+        ],
+        resources: [props.userPool.userPoolArn],
       }),
     );
 
@@ -105,6 +160,13 @@ export class Api extends Construct {
       path: "/api/{proxy+}",
       methods: [apigw.HttpMethod.ANY],
       integration: new integrations.HttpLambdaIntegration("Lambda", this.handler),
+      authorizer,
+    });
+    // より具体的なルートが優先されるため、/api/admin/* だけが管理者 API の Lambda に来る
+    this.httpApi.addRoutes({
+      path: "/api/admin/{proxy+}",
+      methods: [apigw.HttpMethod.ANY],
+      integration: new integrations.HttpLambdaIntegration("AdminLambda", this.adminHandler),
       authorizer,
     });
 
