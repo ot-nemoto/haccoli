@@ -26,6 +26,15 @@ beforeAll(() => {
   template = Template.fromStack(stack);
 }, 60_000);
 
+describe("Cognito", () => {
+  it("グループは candidate・grader・admin の 3 つ（admin は Phase 2。docs/design.md §14）", () => {
+    const groups = Object.values(template.findResources("AWS::Cognito::UserPoolGroup"))
+      .map((g) => g.Properties.GroupName)
+      .sort();
+    expect(groups).toEqual(["admin", "candidate", "grader"]);
+  });
+});
+
 describe("CloudFront", () => {
   it("/api/* はキャッシュせず、全ビューアーヘッダー（Authorization を含む）を転送する", () => {
     template.hasResourceProperties("AWS::CloudFront::Distribution", {
