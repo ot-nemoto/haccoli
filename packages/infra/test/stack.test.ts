@@ -78,6 +78,30 @@ describe("SPA 書き換え関数", () => {
   });
 });
 
+describe("DynamoDB", () => {
+  it("監査ログは業務データと別のテーブルで、PITR を有効にする（docs/design.md §14.4）", () => {
+    template.hasResourceProperties("AWS::DynamoDB::GlobalTable", {
+      TableName: "haccoli-dev-audit",
+      KeySchema: [
+        { AttributeName: "PK", KeyType: "HASH" },
+        { AttributeName: "SK", KeyType: "RANGE" },
+      ],
+      Replicas: [
+        Match.objectLike({
+          PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true },
+        }),
+      ],
+    });
+    template.hasOutput("AuditTableName", {});
+  });
+
+  it("API の Lambda には監査ログのテーブルの権限を与えない（管理者 API は Step 7-3）", () => {
+    const policies = template.findResources("AWS::IAM::Policy");
+    const text = JSON.stringify(policies);
+    expect(text).not.toContain("DataAuditTable");
+  });
+});
+
 describe("API", () => {
   it("Lambda の DynamoDB 権限は必要な操作のみ（Scan・削除・一括取得なし）", () => {
     const policies = template.findResources("AWS::IAM::Policy", {
