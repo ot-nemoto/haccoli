@@ -7,6 +7,7 @@ export * from "./exams.js";
 export * from "./files.js";
 export * from "./grading.js";
 export * from "./keys.js";
+export * from "./paging.js";
 export * from "./purge.js";
 export * from "./results.js";
 export * from "./roles.js";
