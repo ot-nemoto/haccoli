@@ -207,7 +207,26 @@ export async function tearDownStaff(ctx: Context): Promise<void> {
   if (errors.length > 0) throw new AggregateError(errors, "E2E の後片付けに失敗しました");
 }
 
-/** トークンを sessionStorage に入れた状態で画面を開く（OTP のログインを経ない） */
+/** CSP の違反（ブラウザの securitypolicyviolation） */
+export interface CspViolation {
+  violatedDirective: string;
+  blockedURI: string;
+  sourceFile: string;
+  lineNumber: number;
+  /** 違反が起きた画面 */
+  documentURI: string;
+}
+
+const CSP_BINDING = "__haccoliCspViolation";
+
+/**
+ * トークンを sessionStorage に入れた状態で画面を開く（OTP のログインを経ない）。
+ *
+ * CloudFront が付ける CSP（packages/infra/lib/web.ts）の違反も集め、後片付け（await using）のときに
+ * 1 件でもあれば失敗にする。画面の動きに出ない違反（画像・スタイルの読み込みが止められたなど）も
+ * 見逃さないため。違反はその都度 Node 側に送る（ページを移動しても消えない）。
+ * ローカルの SPA（HACCOLI_E2E_BASE_URL=http://localhost:5173）には CSP が付かないので、常に 0 件になる
+ */
 export async function openPage(
   browser: Browser,
   webUrl: string,
@@ -215,6 +234,22 @@ export async function openPage(
   path: string,
 ): Promise<{ page: Page; [Symbol.asyncDispose]: () => Promise<void> }> {
   const context = await browser.newContext({ baseURL: webUrl });
+  const violations: CspViolation[] = [];
+  await context.exposeBinding(CSP_BINDING, (_source, v: CspViolation) => {
+    violations.push(v);
+  });
+  await context.addInitScript((binding) => {
+    document.addEventListener("securitypolicyviolation", (e) => {
+      const report = (window as unknown as Record<string, (v: unknown) => void>)[binding];
+      report?.({
+        violatedDirective: e.violatedDirective,
+        blockedURI: e.blockedURI,
+        sourceFile: e.sourceFile,
+        lineNumber: e.lineNumber,
+        documentURI: e.documentURI,
+      });
+    });
+  }, CSP_BINDING);
   await context.addInitScript(
     ([key, value]) => {
       if (!sessionStorage.getItem(key)) sessionStorage.setItem(key, value);
@@ -223,8 +258,35 @@ export async function openPage(
   );
   const page = await context.newPage();
   await page.goto(path);
-  // テストの終わりにコンテキストを閉じる（await using）
-  return { page, [Symbol.asyncDispose]: () => context.close() };
+  // テストの終わりに、CSP の違反を確かめてからコンテキストを閉じる（await using）
+  return {
+    page,
+    [Symbol.asyncDispose]: async () => {
+      try {
+        // 違反の通知は非同期に届くため、開いている画面のイベントを処理し終えるまで待つ
+        await Promise.all(
+          context
+            .pages()
+            .map((p) =>
+              p.evaluate(() => new Promise((r) => setTimeout(r, 50))).catch(() => undefined),
+            ),
+        );
+        assertNoCspViolations(violations);
+      } finally {
+        await context.close();
+      }
+    },
+  };
+}
+
+/** CSP の違反が 1 件でもあれば、違反した項目と読み込もうとしたものを示して失敗にする */
+export function assertNoCspViolations(violations: readonly CspViolation[]): void {
+  if (violations.length === 0) return;
+  const lines = violations.map(
+    (v) =>
+      `  - ${v.violatedDirective}: ${v.blockedURI || "(inline)"}（${v.documentURI}${v.sourceFile ? ` / ${v.sourceFile}:${v.lineNumber}` : ""}）`,
+  );
+  throw new Error(`CSP の違反が ${violations.length} 件ありました:\n${lines.join("\n")}`);
 }
 
 /**
