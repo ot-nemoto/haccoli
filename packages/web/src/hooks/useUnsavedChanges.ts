@@ -12,8 +12,11 @@ export function useUnsavedChanges(dirty: boolean, message = UNSAVED_MESSAGE): vo
       e.preventDefault();
     };
     const onClick = (e: MouseEvent) => {
-      const link = (e.target as Element | null)?.closest?.("a[href]");
-      if (!link || (link as HTMLAnchorElement).target === "_blank") return;
+      // 画面を離れないクリック（新しいタブ・ウィンドウで開く、ダウンロード、既に止められたもの）は確かめない
+      if (e.defaultPrevented || e.button !== 0) return;
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      const link = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (!link || link.target === "_blank" || link.hasAttribute("download")) return;
       if (!window.confirm(message)) {
         e.preventDefault();
         e.stopPropagation();

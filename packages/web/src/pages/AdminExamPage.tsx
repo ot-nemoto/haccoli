@@ -15,14 +15,21 @@ import { Markdown } from "../components/Markdown.js";
 import { emptyContent, QuestionField } from "../components/QuestionField.js";
 import { useUnsavedChanges } from "../hooks/useUnsavedChanges.js";
 import {
+  draftInputErrors,
   draftState,
+  MAX_OPTIONS,
+  MAX_QUESTIONS,
   move,
   newQuestion,
   nextOptionId,
   previewQuestion,
   QUESTION_TYPE_LABELS,
   type QuestionType,
+  removeOption,
+  renameOption,
+  setMultiple,
   toDraft,
+  toggleCorrect,
   withType,
 } from "../lib/examDraft.js";
 import { formatJst } from "../lib/format.js";
@@ -87,6 +94,9 @@ export function AdminExamPage() {
           notice={notice}
           onNotice={setNotice}
           onReload={reload}
+          onRefresh={async () => {
+            await fetchDetail();
+          }}
         />
       )}
     </AdminLayout>
@@ -98,7 +108,10 @@ function Editor(props: {
   path: string;
   notice?: string;
   onNotice: (notice: string | undefined) => void;
+  /** 読み直して、編集の状態を作り直す（保存していない変更は捨てる） */
   onReload: () => Promise<void>;
+  /** 読み直すが、編集の状態は残す（下書きの状態・新しい版の公開を表示に反映する） */
+  onRefresh: () => Promise<void>;
 }) {
   const { detail, path } = props;
   const api = useApi();
@@ -115,6 +128,8 @@ function Editor(props: {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  /** 下書きとして保存できない値（保存の前に画面で確かめる） */
+  const [inputErrors, setInputErrors] = useState<string[]>([]);
   const [conflict, setConflict] = useState(false);
   const { notice, onNotice: setNotice } = props;
   const [mode, setMode] = useState<"edit" | "preview">("edit");
@@ -127,6 +142,8 @@ function Editor(props: {
     setDef(next);
     setDirty(true);
     setNotice(undefined);
+    // 直したら、保存できない値の表示を更新する（表示中のときだけ）
+    if (inputErrors.length > 0) setInputErrors(draftInputErrors(next));
   };
   const updateQuestion = (i: number, q: DraftQuestion) =>
     update({ ...def, questions: def.questions.map((x, j) => (j === i ? q : x)) });
@@ -134,16 +151,25 @@ function Editor(props: {
   const fail = (e: unknown) => {
     if (e instanceof ApiError && e.code === "VERSION_CONFLICT") setConflict(true);
     setError(messageOf(e));
+    // 新しい版が公開されていた（INVALID_STATE）などを、警告・作り直しの表示に反映する
+    if (e instanceof ApiError && e.code === "INVALID_STATE") void props.onRefresh();
   };
 
-  const save = async (opts: { rebase?: boolean; definition?: ExamDraftDefinition } = {}) => {
+  const save = async () => {
+    const errors = draftInputErrors(def);
+    setInputErrors(errors);
+    if (errors.length > 0) {
+      setError("保存できない値があります。下の点を直してください。");
+      return;
+    }
     setBusy(true);
     setError(undefined);
     try {
       const body: AdminSaveDraftRequest = {
-        definition: opts.definition ?? def,
+        definition: def,
         version,
-        ...(opts.rebase ? { rebase: true } : {}),
+        // 下書きを初めて作るときは、編集を始めた版を伝える（その後に公開された版を上書きしない）
+        ...(version === 0 ? { startedFrom: latest ?? 0 } : {}),
       };
       const res = await api<AdminSaveDraftResponse>(`${path}/draft`, {
         method: "PUT",
@@ -152,20 +178,40 @@ function Editor(props: {
       setVersion(res.draft.version);
       setProblems(res.problems);
       setDirty(false);
-      if (opts.rebase) {
-        // 元にした版が変わったので、一覧・警告の表示のために読み直す
-        await props.onReload();
-        return;
-      }
       setNotice(
         res.problems.length > 0
           ? "下書きを保存しました。公開の前に、下の点を直してください。"
           : "下書きを保存しました。",
       );
-      return true;
+      // 下書きの保存日時・元にした版（新しい版が公開されていたら警告）を表示に反映する
+      await props.onRefresh();
     } catch (e) {
       fail(e);
-      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 下書きを最新版の内容で置き換える。成功してから読み直す（失敗したら画面は変えない） */
+  const rebase = async () => {
+    if (!detail.latest) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const body: AdminSaveDraftRequest = {
+        definition: toDraft(detail.latest),
+        version,
+        rebase: true,
+      };
+      await api<AdminSaveDraftResponse>(`${path}/draft`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      setDirty(false);
+      setNotice(`下書きを最新版（v${latest}）の内容で作り直しました。`);
+      await props.onReload();
+    } catch (e) {
+      fail(e);
     } finally {
       setBusy(false);
     }
@@ -187,6 +233,7 @@ function Editor(props: {
       );
       await props.onReload();
     } catch (e) {
+      setConfirming(undefined);
       fail(e);
     } finally {
       setBusy(false);
@@ -228,13 +275,11 @@ function Editor(props: {
           title="最新版から作り直す"
           confirmLabel="作り直す"
           busy={busy}
-          onConfirm={() => {
-            if (!detail.latest) return;
-            const next = toDraft(detail.latest);
-            setDef(next);
-            void save({ rebase: true, definition: next }).then(() => setConfirming(undefined));
+          onConfirm={() => void rebase()}
+          onCancel={() => {
+            setConfirming(undefined);
+            setError(undefined);
           }}
-          onCancel={() => setConfirming(undefined)}
         >
           下書きの内容を、最新版（v{latest}）の内容で置き換えます。
           <strong>下書きで編集した内容は失われます。</strong>
@@ -305,11 +350,21 @@ function Editor(props: {
           onCancel={() => setConfirming(undefined)}
         >
           下書きの内容を、新しい版（v{(latest ?? 0) + 1}
-          ）として公開します。この後に発行する受験から使われます。発行済みの受験は、発行したときの版のままです。
+          ）として公開します。最新版と同じ内容なら、新しい版は作りません。この後に発行する受験から使われ、発行済みの受験は発行したときの版のままです。
           <strong>公開した版は取り消せません。</strong>
         </ConfirmDialog>
       )}
 
+      {inputErrors.length > 0 && (
+        <section className="panel wide-panel problems" aria-label="保存できない値">
+          <h2>保存できない値</h2>
+          <ul>
+            {inputErrors.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+          </ul>
+        </section>
+      )}
       {problems.length > 0 && (
         <section className="panel wide-panel problems" aria-label="公開の前に直すべき点">
           <h2>公開の前に直すべき点</h2>
@@ -415,12 +470,16 @@ function DefinitionForm(props: {
         <button
           type="button"
           className="secondary"
+          disabled={def.questions.length >= MAX_QUESTIONS}
           onClick={() =>
             props.onChange({ ...def, questions: [...def.questions, newQuestion(addType, qids)] })
           }
         >
           問題を追加
         </button>
+        {def.questions.length >= MAX_QUESTIONS && (
+          <span className="muted">問題は {MAX_QUESTIONS} 問までです。</span>
+        )}
       </div>
     </form>
   );
@@ -546,7 +605,7 @@ function QuestionEditor(props: {
             <input
               type="checkbox"
               checked={q.multiple ?? false}
-              onChange={(e) => set({ multiple: e.target.checked })}
+              onChange={(e) => props.onChange(setMultiple(q, e.target.checked))}
             />
             複数選択できる
           </label>
@@ -571,10 +630,7 @@ function QuestionEditor(props: {
                       value={o.id}
                       maxLength={63}
                       size={6}
-                      onChange={(e) => {
-                        const id = e.target.value;
-                        set({ options: options.map((x, k) => (k === j ? { ...x, id } : x)) });
-                      }}
+                      onChange={(e) => props.onChange(renameOption(q, j, e.target.value))}
                     />
                   </td>
                   <td>
@@ -593,22 +649,14 @@ function QuestionEditor(props: {
                       type="checkbox"
                       aria-label={`選択肢 ${j + 1} は正解`}
                       checked={correct.includes(o.id)}
-                      onChange={(e) =>
-                        setRubric({
-                          correct: e.target.checked
-                            ? [...correct, o.id]
-                            : correct.filter((c) => c !== o.id),
-                        })
-                      }
+                      onChange={(e) => props.onChange(toggleCorrect(q, o.id, e.target.checked))}
                     />
                   </td>
                   <td>
                     <button
                       type="button"
                       className="link danger-link"
-                      onClick={() => {
-                        set({ options: options.filter((_, k) => k !== j) });
-                      }}
+                      onClick={() => props.onChange(removeOption(q, j))}
                     >
                       削除
                     </button>
@@ -621,6 +669,7 @@ function QuestionEditor(props: {
             <button
               type="button"
               className="secondary"
+              disabled={options.length >= MAX_OPTIONS}
               onClick={() =>
                 set({
                   options: [...options, { id: nextOptionId(options.map((o) => o.id)), label: "" }],
@@ -629,6 +678,9 @@ function QuestionEditor(props: {
             >
               選択肢を追加
             </button>
+            {options.length >= MAX_OPTIONS && (
+              <span className="muted"> 選択肢は {MAX_OPTIONS} 個までです。</span>
+            )}
           </p>
         </fieldset>
       )}

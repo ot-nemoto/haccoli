@@ -150,3 +150,98 @@ export const DRAFT_STATE_LABELS: Record<DraftState, string> = {
 
 /** 課題 ID の形（packages/shared の examDefinitionSchema と同じ） */
 export const EXAM_ID_PATTERN = "[a-z0-9][a-z0-9\\-]{0,62}";
+
+// ---- 選択肢と正解 ----
+
+/** 正解を設定する。正解が無くなったら採点基準から消し、採点基準が空なら採点基準ごと消す */
+function withCorrect(q: DraftQuestion, correct: string[]): DraftQuestion {
+  const { rubric, ...rest } = q;
+  const { correct: _, ...others } = rubric ?? {};
+  const next = correct.length > 0 ? { ...others, correct } : others;
+  return Object.keys(next).length > 0 ? { ...rest, rubric: next } : rest;
+}
+
+/** 選択肢を削除する。正解に指定していれば、正解からも外す */
+export function removeOption(q: DraftQuestion, index: number): DraftQuestion {
+  const removed = q.options?.[index];
+  const options = (q.options ?? []).filter((_, i) => i !== index);
+  const correct = (q.rubric?.correct ?? []).filter((c) => c !== removed?.id);
+  return withCorrect({ ...q, options }, correct);
+}
+
+/** 選択肢の ID を変える。正解に指定していれば、正解の ID も付け替える */
+export function renameOption(q: DraftQuestion, index: number, id: string): DraftQuestion {
+  const before = q.options?.[index]?.id;
+  const options = (q.options ?? []).map((o, i) => (i === index ? { ...o, id } : o));
+  const correct = (q.rubric?.correct ?? []).map((c) => (c === before ? id : c));
+  return withCorrect({ ...q, options }, correct);
+}
+
+/** 正解の指定を切り替える。単一選択なら、正解は 1 つだけにする */
+export function toggleCorrect(q: DraftQuestion, id: string, on: boolean): DraftQuestion {
+  const current = q.rubric?.correct ?? [];
+  const correct = on
+    ? q.multiple
+      ? [...current.filter((c) => c !== id), id]
+      : [id]
+    : current.filter((c) => c !== id);
+  return withCorrect(q, correct);
+}
+
+/** 複数選択を切り替える。単一選択にしたら、正解は最初の 1 つだけ残す */
+export function setMultiple(q: DraftQuestion, multiple: boolean): DraftQuestion {
+  const correct = q.rubric?.correct ?? [];
+  return withCorrect({ ...q, multiple }, multiple ? correct : correct.slice(0, 1));
+}
+
+// ---- 保存の前の確認 ----
+
+/** 下書きの形の上限（packages/shared の examDraftSchema と同じ） */
+export const MAX_QUESTIONS = 100;
+export const MAX_OPTIONS = 50;
+const MAX_TEXT = 100_000;
+
+/**
+ * 下書きとして保存できない値（サーバーは下書き全体を拒否し、どの項目かを返さない）。
+ * 保存の前に画面で確かめ、項目を示す。未入力などの「公開の前に直すべき点」はここでは扱わない
+ */
+export function draftInputErrors(def: ExamDraftDefinition): string[] {
+  const errors: string[] = [];
+  if (def.title.length > 200) errors.push("題名: 200 文字以内にしてください");
+  if (def.intro.length > MAX_TEXT) errors.push("冒頭説明: 長すぎます");
+  if (def.questions.length > MAX_QUESTIONS) {
+    errors.push(`問題: ${MAX_QUESTIONS} 問までにしてください`);
+  }
+  def.questions.forEach((q, i) => {
+    const at = `問 ${i + 1}`;
+    if (q.qid.length > 63) errors.push(`${at}の問題 ID: 63 文字以内にしてください`);
+    if (q.body.length > MAX_TEXT) errors.push(`${at}の問題文: 長すぎます`);
+    if (q.rubric?.body !== undefined && q.rubric.body.length > MAX_TEXT) {
+      errors.push(`${at}の採点基準: 長すぎます`);
+    }
+    const points = q.rubric?.points;
+    if (points !== undefined && !(Number.isFinite(points) && points >= 0)) {
+      errors.push(`${at}の配点: 0 以上の数を入れてください`);
+    }
+    if (
+      q.maxLength !== undefined &&
+      !(Number.isInteger(q.maxLength) && q.maxLength >= 1 && q.maxLength <= MAX_TEXT)
+    ) {
+      errors.push(`${at}の最大文字数: 1〜${MAX_TEXT.toLocaleString()} の整数を入れてください`);
+    }
+    const size = q.file?.maxSizeMB;
+    if (size !== undefined && !(Number.isFinite(size) && size > 0 && size <= 20)) {
+      errors.push(`${at}の最大サイズ: 20 MB 以下の正の数を入れてください`);
+    }
+    if ((q.options?.length ?? 0) > MAX_OPTIONS) {
+      errors.push(`${at}の選択肢: ${MAX_OPTIONS} 個までにしてください`);
+    }
+    q.options?.forEach((o, j) => {
+      if (o.id.length > 63) errors.push(`${at}の選択肢 ${j + 1}の ID: 63 文字以内にしてください`);
+      if (o.label.length > 1_000) {
+        errors.push(`${at}の選択肢 ${j + 1}の表示: 1,000 文字以内にしてください`);
+      }
+    });
+  });
+  return errors;
+}
