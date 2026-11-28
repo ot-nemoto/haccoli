@@ -6,6 +6,8 @@ export const keys = {
   userByEmail: (email: string) => ({ GSI1PK: `EMAIL#${email}`, GSI1SK: "USER" }),
 
   examMeta: (examId: string) => ({ PK: `EXAM#${examId}`, SK: "META" }),
+  /** 課題の下書き（docs/design.md §14.5） */
+  examDraft: (examId: string) => ({ PK: `EXAM#${examId}`, SK: "DRAFT" }),
   examVersion: (examId: string, version: number) => ({
     PK: `EXAM#${examId}`,
     // 文字列ソートで版順になるよう 0 埋め

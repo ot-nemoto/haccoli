@@ -118,8 +118,14 @@ describe("publishExam", () => {
       version: 1,
     });
     const items = ddbMock.commandCalls(TransactWriteCommand)[0]?.args[0].input.TransactItems;
-    expect(items?.[0]?.Put?.ConditionExpression).toBe("attribute_not_exists(PK)");
-    expect(items?.[1]?.Put?.Item).toMatchObject({ PK: "EXAM#e1", SK: "V#000001", version: 1 });
+    // META が無い、または管理画面で作った未公開の課題（版の番号が無い）
+    expect(items?.[0]?.Put?.ConditionExpression).toBe("attribute_not_exists(latestVersion)");
+    expect(items?.[1]?.Put?.Item).toMatchObject({
+      PK: "EXAM#e1",
+      SK: "V#000001",
+      version: 1,
+      title: "t",
+    });
     // 同じトランザクションで監査ログを書く
     expect(items?.[2]?.Put?.TableName).toBe("audit");
     expect(items?.[2]?.Put?.Item).toMatchObject({

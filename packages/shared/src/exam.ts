@@ -2,7 +2,9 @@ import type { ChoiceQuestion, FileQuestion, Question, TextQuestion } from "./sch
 
 export type {
   ChoiceQuestion,
+  DraftQuestion,
   ExamDefinition,
+  ExamDraftDefinition,
   FileQuestion,
   Question,
   Rubric,

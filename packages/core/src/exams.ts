@@ -5,6 +5,7 @@ import {
   GetCommand,
   ScanCommand,
   TransactWriteCommand,
+  type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import type { ExamDefinition } from "@haccoli/shared";
 import { examDefinitionSchema } from "@haccoli/shared/schemas";
@@ -104,7 +105,8 @@ export function parseExamDefinition(input: unknown): ExamDefinition {
 export interface ExamSummary {
   examId: string;
   title: string;
-  latestVersion: number;
+  /** 最新版。管理画面で作成して、まだ公開していない課題には無い（§14.5） */
+  latestVersion?: number;
   updatedAt: string;
 }
 
@@ -113,7 +115,7 @@ export type PublishResult =
   | { kind: "unchanged"; examId: string; version: number };
 
 /**
- * 課題定義を新しい版として投入する。最新版と同一内容なら投入しない。
+ * 課題定義を新しい版として投入する（CLI の exam:publish）。最新版と同一内容なら投入しない。
  * 版の採番は META の latestVersion を条件付きで更新して競合を防ぐ。
  */
 export async function publishExam(
@@ -128,8 +130,28 @@ export async function publishExam(
       ConsistentRead: true,
     }),
   );
-  const prev = meta.Item ? Number(meta.Item.latestVersion) : 0;
+  return publishVersion(deps, def, latestVersionOf(meta.Item));
+}
 
+/** META の最新版（未公開・META が無ければ 0） */
+export function latestVersionOf(meta: Record<string, unknown> | undefined): number {
+  return meta?.latestVersion !== undefined ? Number(meta.latestVersion) : 0;
+}
+
+/**
+ * 検証済みの定義を、prev の次の版として書き込む（CLI の投入と、管理画面の下書きからの公開）。
+ * 最新版と同一内容なら書き込まない。extra は同じトランザクションに入れる書き込み（下書きの更新など）。
+ * prev が読んだときから変わっていたら、META の条件で失敗する
+ */
+export async function publishVersion(
+  deps: DataDeps & AuditDeps,
+  def: ExamDefinition,
+  prev: number,
+  opts: {
+    extra?: (version: number) => NonNullable<TransactWriteCommandInput["TransactItems"]>;
+    detail?: Record<string, string | number>;
+  } = {},
+): Promise<PublishResult> {
   if (prev > 0) {
     const latest = await getExamVersion(deps, def.examId, prev);
     // DynamoDB の Map は項目順を保持しないため、項目順に依存しない形で比較する
@@ -154,7 +176,9 @@ export async function publishExam(
               latestVersion: version,
               updatedAt: now,
             },
-            ConditionExpression: prev === 0 ? "attribute_not_exists(PK)" : "latestVersion = :prev",
+            // 未公開（META が無い、または管理画面で作成して版の番号が無い）なら、版の番号が無いこと
+            ConditionExpression:
+              prev === 0 ? "attribute_not_exists(latestVersion)" : "latestVersion = :prev",
             ...(prev === 0 ? {} : { ExpressionAttributeValues: { ":prev": prev } }),
           },
         },
@@ -166,16 +190,18 @@ export async function publishExam(
               type: "ExamVersion",
               examId: def.examId,
               version,
+              title: def.title,
               definition: def,
               publishedAt: now,
             },
             ConditionExpression: "attribute_not_exists(PK)",
           },
         },
+        ...(opts.extra?.(version) ?? []),
         auditPut(deps, {
           action: "exam.publish",
           target: { type: "exam", id: def.examId },
-          detail: { version, title: def.title },
+          detail: { version, title: def.title, ...opts.detail },
         }),
       ],
     }),
@@ -253,7 +279,7 @@ function toExamSummary(item: Record<string, unknown>): ExamSummary {
   return {
     examId: String(item.examId),
     title: String(item.title),
-    latestVersion: Number(item.latestVersion),
+    ...(item.latestVersion !== undefined ? { latestVersion: Number(item.latestVersion) } : {}),
     updatedAt: String(item.updatedAt),
   };
 }
