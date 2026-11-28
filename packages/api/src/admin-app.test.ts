@@ -794,6 +794,19 @@ describe("GET /api/admin/exams/:examId/results.csv", () => {
     expect(JSON.stringify(audit)).not.toMatch(/example\.com|氏名-sub-c/);
   });
 
+  it("大きすぎる課題は 413（CLI を案内し、出力を記録しない）", async () => {
+    withAttempt({ ...ATT, status: "SUBMITTED" });
+    ddbMock.on(ScanCommand).resolves({
+      Items: Array.from({ length: 1001 }, (_, i) => ({ ...ATT, attemptId: `a${i}` })),
+    });
+    const res = await admin("GET", "/api/admin/exams/ex/results.csv");
+    expect(res.status).toBe(413);
+    expect(await res.json()).toMatchObject({
+      error: { code: "TOO_LARGE", message: expect.stringContaining("CLI の result:export") },
+    });
+    expect(auditPuts()).toHaveLength(0);
+  });
+
   it("存在しない課題は 404（出力を記録しない）", async () => {
     withAttempt();
     expect((await admin("GET", "/api/admin/exams/nope/results.csv")).status).toBe(404);

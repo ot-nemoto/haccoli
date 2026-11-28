@@ -1,6 +1,6 @@
 import { closeSync, fchmodSync, openSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
-import { assignGraders, collectResults, resultsCsv } from "@haccoli/core";
+import { assignGraders, exportResultsCsv } from "@haccoli/core";
 import type { Command } from "commander";
 import { confirmIfProd } from "./confirm.js";
 import { createContext } from "./context.js";
@@ -41,10 +41,10 @@ export function addGradingCommands(program: Command, globals: Globals) {
     .option("--out <file>", "出力先", "results.csv")
     .action(async (opts: { exam: string; out: string }) => {
       const ctx = await createContext(globals().env);
-      const { questions, rows } = await collectResults(ctx.deps, opts.exam);
+      const { csv, rows } = await exportResultsCsv(ctx.deps, opts.exam);
       const out = fromInvocationDir(opts.out);
-      writePrivateFile(out, resultsCsv(questions, rows));
-      console.log(`出力しました: ${out}（${rows.length} 行）`);
+      writePrivateFile(out, csv);
+      console.log(`出力しました: ${out}（${rows} 行）`);
       console.log("候補者の個人情報を含みます。取り扱いに注意し、不要になったら削除してください。");
     });
 }
