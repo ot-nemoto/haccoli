@@ -26,3 +26,10 @@ export function rolesProblem(roles: readonly Role[]): string | undefined {
 export function sortRoles(roles: readonly Role[]): Role[] {
   return ROLES.filter((r) => roles.includes(r));
 }
+
+/** 画面に表示するロールの名前 */
+export const ROLE_LABELS: Record<Role, string> = {
+  candidate: "候補者",
+  grader: "採点者",
+  admin: "管理者",
+};

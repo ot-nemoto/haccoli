@@ -5,17 +5,11 @@ import {
   auditMonth,
   listAuditLogs,
 } from "@haccoli/core";
+import { AUDIT_STATUS_LABELS } from "@haccoli/shared";
 import type { Command } from "commander";
 import { createContext } from "./context.js";
 
 type Globals = () => { env: string; yes: boolean };
-
-const STATUS_LABELS: Record<AuditRecord["status"], string> = {
-  SUCCEEDED: "成功",
-  FAILED: "失敗",
-  // 結果を記録する前に止まった。対象の状態を確かめる（docs/design.md §14.4）
-  STARTED: "結果不明",
-};
 
 const jst = (iso: string) =>
   new Date(iso).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
@@ -59,7 +53,7 @@ export function addAuditCommands(program: Command, globals: Globals) {
           actor: actorLabel(l.actor),
           action: l.action,
           target: l.target ? `${l.target.type}:${l.target.id}` : "",
-          status: STATUS_LABELS[l.status],
+          status: AUDIT_STATUS_LABELS[l.status],
           detail: JSON.stringify(l.detail ?? {}),
           error: l.error ?? "",
         })),
