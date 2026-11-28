@@ -1,17 +1,47 @@
 import {
+  type AttemptRecord,
   type AuditedUserDeps,
+  assignGraders,
   auditMonth,
+  cancelAttempt,
+  createAdminDownloadUrl,
+  DUE_SOON_DAYS,
   disableUser,
+  extendAttempt,
+  getAdminAttemptView,
   isAuditAction,
   isRole,
+  issueAttempt,
+  listAttemptPage,
   listAuditLogPage,
+  listExams,
   listUserPage,
   registerUser,
   setStaffRoles,
+  summarizeAttempts,
   type UserProfile,
 } from "@haccoli/core";
-import type { AdminAuditPage, AdminUser, AdminUserPage } from "@haccoli/shared";
-import { adminCreateUserRequestSchema, adminSetRolesRequestSchema } from "@haccoli/shared/schemas";
+import {
+  type AdminAssignResponse,
+  type AdminAttempt,
+  type AdminAttemptDetail,
+  type AdminAttemptPage,
+  type AdminAuditPage,
+  type AdminExam,
+  type AdminSummary,
+  type AdminUser,
+  type AdminUserPage,
+  ATTEMPT_STATUSES,
+  type AttemptStatus,
+  type DownloadUrlResponse,
+} from "@haccoli/shared";
+import {
+  adminAssignRequestSchema,
+  adminCreateUserRequestSchema,
+  adminExtendAttemptRequestSchema,
+  adminIssueAttemptRequestSchema,
+  adminSetRolesRequestSchema,
+} from "@haccoli/shared/schemas";
 import { type Context, Hono } from "hono";
 import type { AppEnv } from "./auth.js";
 import type { AdminApiDeps } from "./deps.js";
@@ -22,7 +52,7 @@ import { invalidRequest } from "./errors.js";
  * 業務ルール（最後の管理者の保護・ロールの組み合わせなど）と監査ログの記録は core で行う。
  * 実行者は認可済みの管理者（sub・氏名）として core に渡す。
  *
- * Step 7-3 では利用者と監査ログのみ。受験・採点結果・課題の API は Step 8・9 で追加する。
+ * 利用者と監査ログは Step 7-3、受験は Step 8-2。採点結果・課題の API は Step 8-3・9 で追加する。
  */
 export function adminRoutes(deps: AdminApiDeps) {
   const app = new Hono<AppEnv>();
@@ -82,6 +112,134 @@ export function adminRoutes(deps: AdminApiDeps) {
     return c.json<AdminAuditPage>(page);
   });
 
+  // ---- 課題・受験（Step 8-2） ----
+
+  /** 課題の一覧（受験の発行・絞り込みに使う） */
+  app.get("/exams", async (c) => {
+    const exams = await listExams(deps);
+    return c.json<AdminExam[]>(
+      exams.map((e) => ({
+        examId: e.examId,
+        title: e.title,
+        latestVersion: e.latestVersion,
+        updatedAt: e.updatedAt,
+      })),
+    );
+  });
+
+  /** ダッシュボード：状態ごとの件数、期限が近い受験、採点者が未割り当ての提出 */
+  app.get("/summary", async (c) => {
+    const s = await summarizeAttempts(deps);
+    return c.json<AdminSummary>({
+      at: s.at,
+      counts: s.counts,
+      dueSoon: s.dueSoon.map(toAdminAttempt),
+      dueSoonTotal: s.dueSoonTotal,
+      dueSoonDays: DUE_SOON_DAYS,
+      unassigned: s.unassigned.map(toAdminAttempt),
+      unassignedTotal: s.unassignedTotal,
+    });
+  });
+
+  /** 受験の一覧。status は表示上の状態（期限を過ぎた未提出は EXPIRED） */
+  app.get("/attempts", async (c) => {
+    const status = c.req.query("status");
+    if (status !== undefined && !ATTEMPT_STATUSES.includes(status as AttemptStatus)) {
+      throw invalidRequest();
+    }
+    const examId = c.req.query("examId");
+    if (examId !== undefined && (examId.length === 0 || examId.length > 100)) {
+      throw invalidRequest();
+    }
+    const page = await listAttemptPage(deps, {
+      status: status as AttemptStatus | undefined,
+      examId,
+      limit: limitOf(c.req.query("limit")),
+      cursor: c.req.query("cursor"),
+    });
+    return c.json<AdminAttemptPage>({ ...page, items: page.items.map(toAdminAttempt) });
+  });
+
+  /** 受験の発行（attempt:issue と同じ。期限は翌日以降） */
+  app.post("/attempts", async (c) => {
+    const body = adminIssueAttemptRequestSchema.safeParse(
+      await c.req.json().catch(() => undefined),
+    );
+    if (!body.success) throw invalidRequest(body.error);
+    const attempt = await issueAttempt(as(c), body.data);
+    return c.json<AdminAttempt>(toAdminAttempt(attempt), 201);
+  });
+
+  app.get("/attempts/:attemptId", async (c) => {
+    const v = await getAdminAttemptView(deps, c.req.param("attemptId"));
+    return c.json<AdminAttemptDetail>({
+      attempt: toAdminAttempt(v.attempt),
+      ...(v.candidate ? { candidateEmail: v.candidate.email } : {}),
+      intro: v.exam.intro,
+      questions: v.exam.questions,
+      answers: Object.fromEntries(
+        v.answers.map((a) => [a.qid, { content: a.content, updatedAt: a.updatedAt }]),
+      ),
+      assignments: v.assignments.map((a) => ({
+        graderSub: a.graderSub,
+        graderName: a.graderName,
+        assignedAt: a.assignedAt,
+        status: a.status,
+        ...(a.finalizedAt ? { finalizedAt: a.finalizedAt } : {}),
+      })),
+      grades: v.grades.map((g) => ({
+        graderSub: g.graderSub,
+        items: g.items,
+        overallComment: g.overallComment,
+        updatedAt: g.updatedAt,
+        ...(g.finalizedAt ? { finalizedAt: g.finalizedAt } : {}),
+      })),
+    });
+  });
+
+  /** 期限の変更（attempt:extend と同じ。期限切れからも戻せる。期限は翌日以降） */
+  app.post("/attempts/:attemptId/extend", async (c) => {
+    const body = adminExtendAttemptRequestSchema.safeParse(
+      await c.req.json().catch(() => undefined),
+    );
+    if (!body.success) throw invalidRequest(body.error);
+    const { after } = await extendAttempt(as(c), {
+      attemptId: c.req.param("attemptId"),
+      deadline: body.data.deadline,
+    });
+    return c.json<AdminAttempt>(toAdminAttempt(after));
+  });
+
+  /** 取消（attempt:cancel と同じ。未着手・回答中のみ） */
+  app.post("/attempts/:attemptId/cancel", async (c) => {
+    const { after } = await cancelAttempt(as(c), { attemptId: c.req.param("attemptId") });
+    return c.json<AdminAttempt>(toAdminAttempt(after));
+  });
+
+  /** 採点者の割り当て（attempt:assign と同じ。割り当て済みの採点者は skipped） */
+  app.post("/attempts/:attemptId/assign", async (c) => {
+    const body = adminAssignRequestSchema.safeParse(await c.req.json().catch(() => undefined));
+    if (!body.success) throw invalidRequest(body.error);
+    const r = await assignGraders(as(c), {
+      attemptId: c.req.param("attemptId"),
+      graderEmails: body.data.graderEmails,
+    });
+    const brief = (u: UserProfile) => ({ sub: u.sub, name: u.name });
+    return c.json<AdminAssignResponse>({
+      attempt: toAdminAttempt(r.attempt),
+      assigned: r.assigned.map(brief),
+      skipped: r.skipped.map(brief),
+    });
+  });
+
+  app.post("/attempts/:attemptId/answers/:qid/download-url", async (c) => {
+    const url = await createAdminDownloadUrl(deps, {
+      attemptId: c.req.param("attemptId"),
+      qid: c.req.param("qid"),
+    });
+    return c.json<DownloadUrlResponse>({ url });
+  });
+
   return app;
 }
 
@@ -99,5 +257,23 @@ function toAdminUser(u: UserProfile): AdminUser {
     roles: u.roles,
     disabled: u.disabled,
     createdAt: u.createdAt,
+  };
+}
+
+function toAdminAttempt(a: AttemptRecord): AdminAttempt {
+  return {
+    attemptId: a.attemptId,
+    candidateSub: a.candidateSub,
+    candidateName: a.candidateName,
+    examId: a.examId,
+    examVersion: a.examVersion,
+    examTitle: a.examTitle,
+    status: a.status,
+    issuedAt: a.issuedAt,
+    deadlineAt: a.deadlineAt,
+    ...(a.startedAt ? { startedAt: a.startedAt } : {}),
+    ...(a.submittedAt ? { submittedAt: a.submittedAt } : {}),
+    ...(a.canceledAt ? { canceledAt: a.canceledAt } : {}),
+    ...(a.assignmentCount !== undefined ? { assignmentCount: a.assignmentCount } : {}),
   };
 }
