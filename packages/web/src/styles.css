@@ -517,3 +517,69 @@ dl.attempt-meta dd {
 .grade-input .comment {
   white-space: pre-wrap;
 }
+
+/* 課題の編集（Step 9） */
+.exam-editor .notice.warning {
+  border-color: #ff8182;
+  background: #ffebe9;
+}
+.editor-actions {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0.5rem 0;
+  background: #f6f8fa;
+}
+.segmented {
+  display: flex;
+}
+.segmented button {
+  border-radius: 0;
+}
+.segmented button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.segmented button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+.question-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.inline-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.inline-fields label {
+  width: 12rem;
+}
+.inline-fields input,
+.inline-fields select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.question-editor textarea,
+.exam-editor .panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+}
+.options-editor {
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+.options-editor table.list input:not([type="checkbox"]) {
+  width: 100%;
+  box-sizing: border-box;
+}
+.problems ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #cf222e;
+}
