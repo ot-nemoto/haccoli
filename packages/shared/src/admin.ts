@@ -68,7 +68,10 @@ export interface AdminAttempt {
   startedAt?: string;
   submittedAt?: string;
   canceledAt?: string;
-  /** 採点者の割り当て数（一度も割り当てていなければ無い） */
+  /**
+   * 採点者の割り当て数（まだ割り当てていなければ 0）。一覧・ダッシュボードでは必ず返す
+   * （割り当て数を持たない既存データは、割り当ての件数を数えて補う）
+   */
   assignmentCount?: number;
 }
 

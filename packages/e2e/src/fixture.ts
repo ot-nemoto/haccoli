@@ -103,6 +103,20 @@ export async function prepare(ctx: Context, candidateEmail: string): Promise<Fix
   };
 }
 
+/**
+ * 管理画面から受験を発行するテスト用。課題を投入し、候補者を登録する（受験は発行しない）。
+ * 後片付けは tearDown（user:purge と同じ処理）で行う
+ */
+export async function prepareCandidate(ctx: Context, candidateEmail: string): Promise<UserProfile> {
+  const examDir = fileURLToPath(new URL(`../../../exams/${EXAM_ID}`, import.meta.url));
+  await publishExam(ctx.deps, await loadExamDir(examDir));
+  return registerUser(ctx.deps, {
+    email: candidateEmail,
+    name: `E2E 候補者 ${candidateEmail.split("@")[0]?.replace("e2e-cand-", "")}`,
+    roles: ["candidate"],
+  });
+}
+
 export async function assignGrader(f: Fixture): Promise<void> {
   await assignGraders(f.ctx.deps, { attemptId: f.attemptId, graderEmails: [GRADER_EMAIL] });
 }

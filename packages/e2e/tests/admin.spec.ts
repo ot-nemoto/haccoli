@@ -52,9 +52,8 @@ test.describe
     });
 
     test("管理者が採点者に管理者のロールを付与し、外す", async ({ browser }, testInfo) => {
-      await using s = await openPage(browser, f.webUrl, f.admin.session, "/admin");
+      await using s = await openPage(browser, f.webUrl, f.admin.session, "/admin/users");
       const page = s.page;
-      await expect(page).toHaveURL(/\/admin\/users$/);
       await expect(page.getByRole("heading", { name: "利用者", exact: true })).toBeVisible();
 
       await page.getByRole("combobox", { name: "ロール", exact: true }).selectOption("grader");

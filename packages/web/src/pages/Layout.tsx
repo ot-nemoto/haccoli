@@ -6,6 +6,8 @@ import { ROLE_ROUTES, type ScreenRole } from "../auth/roles.js";
 export interface NavItem {
   to: string;
   label: string;
+  /** 完全一致のときだけ選択中にする（子のパスでは選択中にしない） */
+  end?: boolean;
 }
 
 export function Layout(props: { userRole: ScreenRole; nav?: NavItem[]; children: ReactNode }) {
@@ -20,7 +22,7 @@ export function Layout(props: { userRole: ScreenRole; nav?: NavItem[]; children:
           {props.nav && (
             <nav className="nav" aria-label="メニュー">
               {props.nav.map((n) => (
-                <NavLink key={n.to} to={n.to}>
+                <NavLink key={n.to} to={n.to} end={n.end}>
                   {n.label}
                 </NavLink>
               ))}

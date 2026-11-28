@@ -1,5 +1,4 @@
 import {
-  type AdminUserPage,
   AUDIT_ACTION_LABELS,
   AUDIT_ACTIONS,
   AUDIT_STATUS_LABELS,
@@ -7,9 +6,11 @@ import {
   type AdminAuditPage as AuditPage,
   type AuditRecord,
 } from "@haccoli/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import { messageOf } from "../api.js";
 import { useApi } from "../auth/useApi.js";
+import { useUsers } from "../hooks/useUsers.js";
 import {
   actionLabel,
   actorLabel,
@@ -27,9 +28,6 @@ const STATUS_BADGES: Record<AuditRecord["status"], string> = {
   STARTED: "badge-unknown",
 };
 
-/** 利用者の氏名を引くために読む最大のページ数（1 ページ 100 件） */
-const NAME_PAGES = 10;
-
 /** 監査ログ（docs/design.md §14.7 /admin/audit） */
 export function AdminAuditPage() {
   const api = useApi();
@@ -39,8 +37,6 @@ export function AdminAuditPage() {
   const [cursor, setCursor] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [names, setNames] = useState(new Map<string, string>());
-  const [namesIncomplete, setNamesIncomplete] = useState(false);
   const latest = useRef(0);
 
   const load = useCallback(
@@ -73,32 +69,10 @@ export function AdminAuditPage() {
     }
   }, [load, month, action]);
 
-  // 監査ログの対象は sub で記録している（§14.4）。表示のときだけ、利用者の一覧から氏名を補う。
-  // 個人データを削除した利用者は一覧にいないので、sub のまま表示する
-  useEffect(() => {
-    let canceled = false;
-    (async () => {
-      const map = new Map<string, string>();
-      let next: string | undefined;
-      try {
-        for (let i = 0; i < NAME_PAGES; i++) {
-          const page = await api<AdminUserPage>(
-            withQuery("/admin/users", { limit: "100", cursor: next }),
-          );
-          for (const u of page.items) map.set(u.sub, u.name);
-          next = page.cursor;
-          if (!next) break;
-        }
-      } catch {
-        // 読めた分は使う。引けなかった人は sub だけになるので、そのことを表示する
-        if (!canceled) setNamesIncomplete(true);
-      }
-      if (!canceled) setNames(map);
-    })();
-    return () => {
-      canceled = true;
-    };
-  }, [api]);
+  // 監査ログの対象・内容の利用者は sub で記録している（§14.4）。表示のときだけ、利用者の一覧から
+  // 氏名を補う。個人データを削除した利用者は一覧にいないので、sub のまま表示する
+  const { users, incomplete: namesIncomplete } = useUsers();
+  const names = useMemo(() => new Map(users?.map((u) => [u.sub, u.name])), [users]);
 
   const unknown = items?.filter((r) => r.status === "STARTED").length ?? 0;
 
@@ -163,7 +137,16 @@ export function AdminAuditPage() {
                 <td>{formatJst(r.at)}</td>
                 <td className="wrap">{actorLabel(r.actor)}</td>
                 <td>{actionLabel(r.action)}</td>
-                <td className="wrap">{targetLabel(r.target, names)}</td>
+                <td className="wrap">
+                  {r.target?.type === "attempt" ? (
+                    // 個人データを削除した後は、詳細が「見つかりません」になる
+                    <Link to={`/admin/attempts/${encodeURIComponent(r.target.id)}`}>
+                      {targetLabel(r.target, names)}
+                    </Link>
+                  ) : (
+                    targetLabel(r.target, names)
+                  )}
+                </td>
                 <td>
                   <span className={`badge ${STATUS_BADGES[r.status]}`}>
                     {AUDIT_STATUS_LABELS[r.status]}
@@ -171,7 +154,7 @@ export function AdminAuditPage() {
                 </td>
                 <td className="wrap">
                   <dl className="detail">
-                    {detailEntries(r.detail).map(([k, v]) => (
+                    {detailEntries(r.detail, names).map(([k, v]) => (
                       <div key={k}>
                         <dt>{k}</dt>
                         <dd>{v}</dd>
