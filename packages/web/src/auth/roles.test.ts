@@ -16,3 +16,15 @@ describe("safeReturnPath", () => {
     expect(safeReturnPath("candidate", from)).toBe(expected);
   });
 });
+
+describe("safeReturnPath（管理者）", () => {
+  it.each([
+    ["/admin/users", "/admin/users"],
+    ["/admin", "/admin"],
+    ["/administrator", "/admin"],
+    ["/grader", "/admin"],
+    ["/exam/abc", "/admin"],
+  ])("%j → %s", (from, expected) => {
+    expect(safeReturnPath("admin", from)).toBe(expected);
+  });
+});

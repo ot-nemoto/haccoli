@@ -2,6 +2,8 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider } from "./auth/AuthContext.js";
 import { RequireRole } from "./auth/RequireRole.js";
 import type { RuntimeConfig } from "./config.js";
+import { AdminAuditPage } from "./pages/AdminAuditPage.js";
+import { AdminUsersPage } from "./pages/AdminUsersPage.js";
 import { AttemptPage } from "./pages/AttemptPage.js";
 import { CandidateHomePage } from "./pages/CandidateHomePage.js";
 import { GraderAttemptPage } from "./pages/GraderAttemptPage.js";
@@ -53,6 +55,32 @@ export function App(props: { config: RuntimeConfig }) {
             element={
               <RequireRole userRole="grader">
                 <GraderAttemptPage />
+              </RequireRole>
+            }
+          />
+          <Route path="/admin/login" element={<LoginPage userRole="admin" />} />
+          {/* ダッシュボード（Step 8-2）ができるまでは利用者の画面へ */}
+          <Route
+            path="/admin"
+            element={
+              <RequireRole userRole="admin">
+                <Navigate to="/admin/users" replace />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="/admin/users"
+            element={
+              <RequireRole userRole="admin">
+                <AdminUsersPage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="/admin/audit"
+            element={
+              <RequireRole userRole="admin">
+                <AdminAuditPage />
               </RequireRole>
             }
           />

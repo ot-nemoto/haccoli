@@ -1,16 +1,32 @@
 import type { ReactNode } from "react";
-import { useNavigate } from "react-router";
+import { NavLink, useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.js";
 import { ROLE_ROUTES, type ScreenRole } from "../auth/roles.js";
 
-export function Layout(props: { userRole: ScreenRole; children: ReactNode }) {
+export interface NavItem {
+  to: string;
+  label: string;
+}
+
+export function Layout(props: { userRole: ScreenRole; nav?: NavItem[]; children: ReactNode }) {
   const { session, signOut } = useAuth();
   const navigate = useNavigate();
   const routes = ROLE_ROUTES[props.userRole];
   return (
     <>
       <header className="header">
-        <span>{routes.label}</span>
+        <span className="header-title">
+          {routes.label}
+          {props.nav && (
+            <nav className="nav" aria-label="メニュー">
+              {props.nav.map((n) => (
+                <NavLink key={n.to} to={n.to}>
+                  {n.label}
+                </NavLink>
+              ))}
+            </nav>
+          )}
+        </span>
         <span>
           {session?.user.name} さん{" "}
           <button
@@ -25,7 +41,7 @@ export function Layout(props: { userRole: ScreenRole; children: ReactNode }) {
           </button>
         </span>
       </header>
-      <main className="content">{props.children}</main>
+      <main className={props.nav ? "content wide" : "content"}>{props.children}</main>
     </>
   );
 }
