@@ -346,6 +346,36 @@ describe("publishExamDraft", () => {
     });
   });
 
+  it("編集を始めた後に新しい版が公開されていたら、初めての保存でも古い版を元にする（公開できない）", async () => {
+    const examId = newId();
+    const def = {
+      ...draftOf(examId),
+      questions: [{ qid: "q1", type: "text" as const, body: "b", maxLength: 10 }],
+    };
+    await publishExam(deps, def);
+    // 画面で v1 から編集を始めた後に、CLI で v2 を投入する
+    await publishExam(deps, { ...def, title: "CLI で投入" });
+    const res = await saveExamDraft(deps, {
+      examId,
+      definition: draftOf(examId, { title: "画面で編集" }),
+      version: 0,
+      startedFrom: 1,
+      editor,
+    });
+    expect(res.draft.baseVersion).toBe(1);
+    await expect(publishExamDraft(deps, { examId, version: 1 })).rejects.toThrow(StateError);
+    // 今の最新版より新しい版から始めたことにはできない
+    await expect(
+      saveExamDraft(deps, {
+        examId,
+        definition: draftOf(examId),
+        version: 0,
+        startedFrom: 9,
+        editor,
+      }),
+    ).rejects.toThrow("編集を始めた版が不正です");
+  });
+
   it("既存の課題で初めて作る下書きは、今の最新版を元にする", async () => {
     const examId = newId();
     await publishExam(deps, {
