@@ -552,7 +552,6 @@ describe("課題の下書き・公開", () => {
     const res = await admin("PUT", "/api/admin/exams/new-exam/draft", {
       definition: draft,
       version: 0,
-      baseVersion: 0,
       create: true,
     });
     expect(res.status).toBe(201);
@@ -576,27 +575,23 @@ describe("課題の下書き・公開", () => {
   it("既にある課題 ID・古い版での保存は 409、課題 ID の変更・不正な本文は 400", async () => {
     examMeta({ examId: "new-exam", latestVersion: 1 });
     const put = (body: unknown) => admin("PUT", "/api/admin/exams/new-exam/draft", body);
-    expect(
-      (await put({ definition: draft, version: 0, baseVersion: 0, create: true })).status,
-    ).toBe(409);
+    expect((await put({ definition: draft, version: 0, create: true })).status).toBe(409);
     ddbMock.on(TransactWriteCommand).rejects(
       Object.assign(new Error("x"), {
         name: "TransactionCanceledException",
         CancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }],
       }),
     );
-    const stale = await put({ definition: draft, version: 2, baseVersion: 1 });
+    const stale = await put({ definition: draft, version: 2 });
     expect(stale.status).toBe(409);
     expect(((await stale.json()) as { error: { code: string } }).error.code).toBe(
       "VERSION_CONFLICT",
     );
-    expect(
-      (await put({ definition: { ...draft, examId: "other" }, version: 1, baseVersion: 1 })).status,
-    ).toBe(400);
-    expect((await put({ definition: draft, version: -1, baseVersion: 0 })).status).toBe(400);
-    expect(
-      (await put({ definition: { ...draft, extra: 1 }, version: 1, baseVersion: 0 })).status,
-    ).toBe(400);
+    expect((await put({ definition: { ...draft, examId: "other" }, version: 1 })).status).toBe(400);
+    expect((await put({ definition: draft, version: -1 })).status).toBe(400);
+    // 元にした版はサーバーが決める（画面から指定させない）
+    expect((await put({ definition: draft, version: 1, baseVersion: 1 })).status).toBe(400);
+    expect((await put({ definition: { ...draft, extra: 1 }, version: 1 })).status).toBe(400);
   });
 
   it("下書きを公開する。検証を通らなければ 400、元にした版が古ければ 409", async () => {
@@ -621,7 +616,7 @@ describe("課題の下書き・公開", () => {
       admin("POST", "/api/admin/exams/new-exam/publish", { version });
     const ok = await publish(2);
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ kind: "published", version: 1 });
+    expect(await ok.json()).toEqual({ kind: "published", version: 1, draftVersion: 3 });
     const audit = auditInTransaction().find((a) => a?.action === "exam.publish");
     expect(audit).toMatchObject({ actor: { type: "admin", sub: "sub-a" } });
 

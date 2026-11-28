@@ -143,8 +143,8 @@ export const adminSaveDraftRequestSchema = z
     definition: examDraftSchema,
     /** 読み込んだ時点の下書きの版（下書きがなければ 0）。楽観ロックに使う */
     version: z.number().int().nonnegative(),
-    /** 下書きの元にした公開版（未公開なら 0） */
-    baseVersion: z.number().int().nonnegative(),
+    /** 元にした版を、今の最新版に付け替える（最新版の内容から作り直したとき）。元にした版はサーバーが決める */
+    rebase: z.boolean().default(false),
     /** 新しい課題として作る（既にある課題 ID なら 409） */
     create: z.boolean().default(false),
   })

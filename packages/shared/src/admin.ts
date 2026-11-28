@@ -85,8 +85,11 @@ export interface AdminExamDetail {
 /** PUT /api/admin/exams/{examId}/draft のリクエスト */
 export interface AdminSaveDraftRequest {
   definition: ExamDraftDefinition;
+  /** 読み込んだ時点の下書きの版（下書きがなければ 0） */
   version: number;
-  baseVersion: number;
+  /** 元にした版を、今の最新版に付け替える（最新版の内容から作り直したとき） */
+  rebase?: boolean;
+  /** 新しい課題として作る */
   create?: boolean;
 }
 
@@ -102,6 +105,8 @@ export interface AdminPublishResponse {
   /** published: 新しい版を作った。unchanged: 最新版と同じ内容のため作らなかった */
   kind: "published" | "unchanged";
   version: number;
+  /** 公開後の下書きの版（公開で下書きの版も進むため、続けて保存するときはこの版を使う） */
+  draftVersion: number;
 }
 
 /** 受験（一覧・詳細）。status は表示上の状態（期限処理の前でも、期限を過ぎた未提出は EXPIRED） */

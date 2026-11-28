@@ -213,8 +213,9 @@ export async function getExamSummary(
   deps: DataDeps,
   examId: string,
 ): Promise<ExamSummary | undefined> {
+  // 公開の直後に発行しても、公開前の META（版の番号なし）を読まないよう、強い整合性で読む
   const res = await deps.ddb.send(
-    new GetCommand({ TableName: deps.tableName, Key: keys.examMeta(examId) }),
+    new GetCommand({ TableName: deps.tableName, Key: keys.examMeta(examId), ConsistentRead: true }),
   );
   return res.Item ? toExamSummary(res.Item) : undefined;
 }

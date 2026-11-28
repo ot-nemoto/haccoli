@@ -178,7 +178,11 @@ export function adminRoutes(deps: AdminApiDeps) {
       examId: c.req.param("examId"),
       version: body.data.version,
     });
-    return c.json<AdminPublishResponse>({ kind: res.kind, version: res.version });
+    return c.json<AdminPublishResponse>({
+      kind: res.kind,
+      version: res.version,
+      draftVersion: res.draftVersion,
+    });
   });
 
   /** ダッシュボード：状態ごとの件数、期限が近い受験、採点者が未割り当ての提出 */

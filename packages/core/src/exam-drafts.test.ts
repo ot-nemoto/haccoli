@@ -97,12 +97,13 @@ beforeEach(() => {
           UpdateExpression: string;
           ExpressionAttributeValues: Record<string, unknown>;
         };
-        if (u.UpdateExpression !== "SET publishedVersion = :v, baseVersion = :v") {
+        if (u.UpdateExpression !== "SET publishedVersion = :v, baseVersion = :v, version = :next") {
           throw new Error(`未対応の更新: ${u.UpdateExpression}`);
         }
         const cur = table.get(keyOf(u.Key)) ?? {};
         const v = u.ExpressionAttributeValues[":v"];
-        table.set(keyOf(u.Key), { ...cur, publishedVersion: v, baseVersion: v });
+        const next = u.ExpressionAttributeValues[":next"];
+        table.set(keyOf(u.Key), { ...cur, publishedVersion: v, baseVersion: v, version: next });
       }
     }
     return {};
@@ -128,7 +129,6 @@ describe("saveExamDraft", () => {
       examId,
       definition: draftOf(examId, { questions: [] }),
       version: 0,
-      baseVersion: 0,
       create: true,
       editor,
     });
@@ -154,7 +154,6 @@ describe("saveExamDraft", () => {
         examId,
         definition: draftOf(examId),
         version: 0,
-        baseVersion: 0,
         create: true,
         editor,
       });
@@ -168,12 +167,11 @@ describe("saveExamDraft", () => {
       examId,
       definition: draftOf(examId),
       version: 0,
-      baseVersion: 0,
       create: true,
       editor,
     });
     const save = (version: number) =>
-      saveExamDraft(deps, { examId, definition: draftOf(examId), version, baseVersion: 0, editor });
+      saveExamDraft(deps, { examId, definition: draftOf(examId), version, editor });
     await expect(save(1)).resolves.toMatchObject({ draft: { version: 2 } });
     // 別の画面が版 1 を読み込んだまま保存する
     await expect(save(1)).rejects.toThrow(VersionConflictError);
@@ -181,14 +179,13 @@ describe("saveExamDraft", () => {
     expect(audits.filter((a) => a.action === "exam.save")).toHaveLength(2);
   });
 
-  it("課題 ID の変更・存在しない課題・存在しない版を元にした下書き・不正な形は拒否する", async () => {
+  it("課題 ID の変更・存在しない課題・不正な形は拒否する", async () => {
     const examId = newId();
     await expect(
       saveExamDraft(deps, {
         examId,
         definition: draftOf("other"),
         version: 0,
-        baseVersion: 0,
         create: true,
         editor,
       }),
@@ -198,7 +195,6 @@ describe("saveExamDraft", () => {
         examId,
         definition: draftOf(examId),
         version: 0,
-        baseVersion: 0,
         editor,
       }),
     ).rejects.toThrow(NotFoundError);
@@ -206,25 +202,14 @@ describe("saveExamDraft", () => {
       examId,
       definition: draftOf(examId),
       version: 0,
-      baseVersion: 0,
       create: true,
       editor,
     });
     await expect(
       saveExamDraft(deps, {
         examId,
-        definition: draftOf(examId),
-        version: 1,
-        baseVersion: 3,
-        editor,
-      }),
-    ).rejects.toThrow(ValidationError);
-    await expect(
-      saveExamDraft(deps, {
-        examId,
         definition: { ...draftOf(examId), extra: 1 } as unknown as ExamDraftDefinition,
         version: 1,
-        baseVersion: 0,
         editor,
       }),
     ).rejects.toThrow(ValidationError);
@@ -238,7 +223,6 @@ describe("publishExamDraft", () => {
       examId,
       definition: draftOf(examId, over),
       version: 0,
-      baseVersion: 0,
       create: true,
       editor,
     });
@@ -250,14 +234,16 @@ describe("publishExamDraft", () => {
     await expect(publishExamDraft(deps, { examId, version: 1 })).resolves.toMatchObject({
       kind: "published",
       version: 1,
+      draftVersion: 2,
     });
     expect(table.get(`EXAM#${examId}|META`)).toMatchObject({ latestVersion: 1 });
     expect(table.get(`EXAM#${examId}|V#000001`)).toMatchObject({
       title: "課題",
       definition: { questions: [{ qid: "q1", maxLength: 20_000 }] },
     });
+    // 下書きの版も進める（公開前に読み込んだ画面の保存で、公開の記録を消さない）
     expect(table.get(`EXAM#${examId}|DRAFT`)).toMatchObject({
-      version: 1,
+      version: 2,
       baseVersion: 1,
       publishedVersion: 1,
     });
@@ -270,20 +256,21 @@ describe("publishExamDraft", () => {
   it("最新版と同じ内容なら版を作らない", async () => {
     const examId = await created();
     await publishExamDraft(deps, { examId, version: 1 });
-    // 同じ内容のまま保存し直して公開する
-    await saveExamDraft(deps, {
-      examId,
-      definition: draftOf(examId),
-      version: 1,
-      baseVersion: 1,
-      editor,
-    });
-    await expect(publishExamDraft(deps, { examId, version: 2 })).resolves.toMatchObject({
+    // 同じ内容のまま保存し直して公開する（保存で publishedVersion は無くなる）
+    await saveExamDraft(deps, { examId, definition: draftOf(examId), version: 2, editor });
+    expect(table.get(`EXAM#${examId}|DRAFT`)?.publishedVersion).toBeUndefined();
+    await expect(publishExamDraft(deps, { examId, version: 3 })).resolves.toMatchObject({
       kind: "unchanged",
       version: 1,
+      draftVersion: 4,
     });
     expect(table.has(`EXAM#${examId}|V#000002`)).toBe(false);
-    expect(table.get(`EXAM#${examId}|DRAFT`)).toMatchObject({ publishedVersion: 1 });
+    expect(table.get(`EXAM#${examId}|DRAFT`)).toMatchObject({ publishedVersion: 1, version: 4 });
+    // 版は作らなくても、下書きを書き換えたので監査ログに残す
+    expect(audits.at(-1)).toMatchObject({
+      action: "exam.publish",
+      detail: { version: 1, draftVersion: 3, unchanged: true },
+    });
   });
 
   it("公開の検証を通らない下書きは公開しない（直すべき点を示す）", async () => {
@@ -303,8 +290,7 @@ describe("publishExamDraft", () => {
     await saveExamDraft(deps, {
       examId,
       definition: draftOf(examId, { title: "画面で編集" }),
-      version: 1,
-      baseVersion: 1,
+      version: 2,
       editor,
     });
     // その後に CLI で v2 を投入する
@@ -312,10 +298,69 @@ describe("publishExamDraft", () => {
       ...draftOf(examId, { title: "CLI で投入" }),
       questions: [{ qid: "q1", type: "text", body: "問題文", maxLength: 100 }],
     });
-    await expect(publishExamDraft(deps, { examId, version: 2 })).rejects.toThrow(StateError);
+    await expect(publishExamDraft(deps, { examId, version: 3 })).rejects.toThrow(StateError);
+    // 画面が「元にした版は v2」と言って保存しても、元にした版は前の下書きの値（v1）のまま
+    const draft = await saveExamDraft(deps, {
+      examId,
+      definition: { ...draftOf(examId, { title: "画面で編集" }), baseVersion: 2 } as never,
+      version: 3,
+      editor,
+    }).catch((e: unknown) => e);
+    expect(draft).toBeInstanceOf(ValidationError);
+    await saveExamDraft(deps, {
+      examId,
+      definition: draftOf(examId, { title: "画面で編集" }),
+      version: 3,
+      editor,
+    });
+    expect(table.get(`EXAM#${examId}|DRAFT`)).toMatchObject({ version: 4, baseVersion: 1 });
+    await expect(publishExamDraft(deps, { examId, version: 4 })).rejects.toThrow(StateError);
+    // 最新版から作り直したと明示したときだけ、元にした版を付け替える
+    await saveExamDraft(deps, {
+      examId,
+      definition: draftOf(examId, { title: "最新版から作り直し" }),
+      version: 4,
+      rebase: true,
+      editor,
+    });
+    expect(table.get(`EXAM#${examId}|DRAFT`)).toMatchObject({ version: 5, baseVersion: 2 });
+    await expect(publishExamDraft(deps, { examId, version: 5 })).resolves.toMatchObject({
+      version: 3,
+    });
     expect(table.get(`EXAM#${examId}|META`)).toMatchObject({
-      latestVersion: 2,
-      title: "CLI で投入",
+      latestVersion: 3,
+      title: "最新版から作り直し",
+    });
+  });
+
+  it("公開前に読み込んだ画面が保存しようとしても、公開の記録を消さない", async () => {
+    const examId = await created();
+    await publishExamDraft(deps, { examId, version: 1 });
+    // 公開前（下書きの版 1）に開いていた別のタブが保存する
+    await expect(
+      saveExamDraft(deps, { examId, definition: draftOf(examId), version: 1, editor }),
+    ).rejects.toThrow(VersionConflictError);
+    expect(table.get(`EXAM#${examId}|DRAFT`)).toMatchObject({
+      publishedVersion: 1,
+      baseVersion: 1,
+    });
+  });
+
+  it("既存の課題で初めて作る下書きは、今の最新版を元にする", async () => {
+    const examId = newId();
+    await publishExam(deps, {
+      ...draftOf(examId),
+      questions: [{ qid: "q1", type: "text", body: "b", maxLength: 10 }],
+    });
+    const res = await saveExamDraft(deps, {
+      examId,
+      definition: draftOf(examId, { title: "編集" }),
+      version: 0,
+      editor,
+    });
+    expect(res.draft).toMatchObject({ version: 1, baseVersion: 1 });
+    await expect(publishExamDraft(deps, { examId, version: 1 })).resolves.toMatchObject({
+      version: 2,
     });
   });
 
@@ -349,7 +394,6 @@ describe("未公開の課題", () => {
       examId,
       definition: draftOf(examId),
       version: 0,
-      baseVersion: 0,
       create: true,
       editor,
     });
@@ -376,7 +420,6 @@ describe("未公開の課題", () => {
       examId,
       definition: draftOf(examId, { title: "下書きの題名" }),
       version: 0,
-      baseVersion: 0,
       create: true,
       editor,
     });
@@ -389,7 +432,12 @@ describe("未公開の課題", () => {
     const view = await getExamForEdit(deps, examId);
     expect(view.exam.latestVersion).toBe(1);
     expect(view.latest?.title).toBe("下書きの題名");
-    expect(view.draft).toMatchObject({ version: 1, publishedVersion: 1, problems: [] });
+    expect(view.draft).toMatchObject({
+      version: 2,
+      baseVersion: 1,
+      publishedVersion: 1,
+      problems: [],
+    });
     expect(view.versions).toEqual([{ version: 1, title: "下書きの題名", publishedAt: NOW }]);
     await expect(getExamForEdit(deps, newId())).rejects.toThrow(NotFoundError);
   });

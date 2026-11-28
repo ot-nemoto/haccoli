@@ -127,7 +127,8 @@ export async function saveExamDraft(
     examId: string;
     definition: ExamDraftDefinition;
     version: number;
-    baseVersion: number;
+    /** 元にした版を、今の最新版に付け替える（最新版の内容から作り直したとき） */
+    rebase?: boolean;
     create?: boolean;
     editor: Editor;
   },
@@ -143,17 +144,26 @@ export async function saveExamDraft(
     throw new ValidationError(`下書きが大きすぎます（${bytes} バイト）。本文を短くしてください`);
   }
 
+  // 元にした版はサーバーで決める（画面の値を信じると、新しい版の上書きを防げない）
+  //  - 新しい課題：0（未公開）
+  //  - 下書きを初めて作る：今の最新版
+  //  - 保存し直す：前の下書きの値を引き継ぐ。rebase のときだけ今の最新版に付け替える
   const meta = await getMeta(deps, input.examId);
+  let baseVersion = 0;
   if (input.create) {
     if (meta) throw new ExamAlreadyExistsError(`既にある課題 ID です: ${input.examId}`);
-    if (input.version !== 0 || input.baseVersion !== 0) {
+    if (input.version !== 0) {
       throw new ValidationError("新しい課題の下書きは、版 0 から保存してください");
     }
   } else {
     if (!meta) throw new NotFoundError(`課題が見つかりません: ${input.examId}`);
-    // 元にした版は、公開済みの版（存在しない版を元にしたことにしない）
-    if (input.baseVersion > latestVersionOf(meta)) {
-      throw new ValidationError("元にした版が不正です");
+    const latest = latestVersionOf(meta);
+    if (input.version === 0) {
+      baseVersion = latest;
+    } else {
+      const current = await getDraft(deps, input.examId);
+      if (!current || current.version !== input.version) throw new VersionConflictError();
+      baseVersion = input.rebase ? latest : current.baseVersion;
     }
   }
 
@@ -162,7 +172,7 @@ export async function saveExamDraft(
     examId: input.examId,
     definition,
     version: input.version + 1,
-    baseVersion: input.baseVersion,
+    baseVersion,
     updatedAt: now,
     updatedBy: { sub: input.editor.sub, name: input.editor.name },
   };
@@ -207,6 +217,7 @@ export async function saveExamDraft(
               baseVersion: draft.baseVersion,
               questions: definition.questions.length,
               ...(input.create ? { created: true } : {}),
+              ...(input.rebase ? { rebased: true } : {}),
             },
           }),
         ],
@@ -233,7 +244,7 @@ export async function saveExamDraft(
 export async function publishExamDraft(
   deps: DataDeps & AuditDeps,
   input: { examId: string; version: number },
-): Promise<PublishResult> {
+): Promise<PublishResult & { draftVersion: number }> {
   const [meta, draft] = await Promise.all([
     getMeta(deps, input.examId),
     getDraft(deps, input.examId),
@@ -255,15 +266,23 @@ export async function publishExamDraft(
     throw new ValidationError(`公開の前に直してください: ${problems.join(" / ")}`);
   }
 
-  /** 公開した版を下書きに記録する（下書きは消さない）。下書きの版が変わっていたら失敗させる */
+  /**
+   * 公開した版を下書きに記録する（下書きは消さない）。下書きの版も進め、公開前に読み込んだ画面が
+   * 保存して公開の記録を消さないようにする。下書きの版が変わっていたら失敗させる
+   */
+  const draftVersion = input.version + 1;
   const markDraft = (version: number) => [
     {
       Update: {
         TableName: deps.tableName,
         Key: keys.examDraft(input.examId),
-        UpdateExpression: "SET publishedVersion = :v, baseVersion = :v",
+        UpdateExpression: "SET publishedVersion = :v, baseVersion = :v, version = :next",
         ConditionExpression: "version = :expected",
-        ExpressionAttributeValues: { ":v": version, ":expected": input.version },
+        ExpressionAttributeValues: {
+          ":v": version,
+          ":next": draftVersion,
+          ":expected": input.version,
+        },
       },
     },
   ];
@@ -285,18 +304,32 @@ export async function publishExamDraft(
     if (codes?.[2] === "ConditionalCheckFailed") throw new VersionConflictError();
     throw e;
   }
-  if (result.kind === "unchanged" && draft.publishedVersion !== result.version) {
-    // 最新版と同じ内容：版は作らず、下書きがその版と同じであることだけ記録する
-    try {
-      await deps.ddb.send(new TransactWriteCommand({ TransactItems: markDraft(result.version) }));
-    } catch (e) {
-      if (transactionFailureCodes(e)?.[0] === "ConditionalCheckFailed") {
-        throw new VersionConflictError();
-      }
-      throw e;
-    }
+  if (result.kind === "published") return { ...result, draftVersion };
+  if (draft.publishedVersion === result.version) {
+    // 記録済み（同じ下書きをもう一度公開した）：何も書かない
+    return { ...result, draftVersion: input.version };
   }
-  return result;
+  // 最新版と同じ内容：版は作らず、下書きがその版と同じであることを記録する（監査ログも同じトランザクション）
+  try {
+    await deps.ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          ...markDraft(result.version),
+          auditPut(deps, {
+            action: "exam.publish",
+            target: { type: "exam", id: input.examId },
+            detail: { version: result.version, draftVersion: input.version, unchanged: true },
+          }),
+        ],
+      }),
+    );
+  } catch (e) {
+    if (transactionFailureCodes(e)?.[0] === "ConditionalCheckFailed") {
+      throw new VersionConflictError();
+    }
+    throw e;
+  }
+  return { ...result, draftVersion };
 }
 
 export interface AdminExamSummary extends ExamSummary {
