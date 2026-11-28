@@ -47,6 +47,8 @@ export interface AttemptRecord {
   startedAt?: string;
   submittedAt?: string;
   canceledAt?: string;
+  /** 採点者の割り当て数（assignGraders が更新する。まだ割り当てていない受験には無い） */
+  assignmentCount?: number;
 }
 
 export interface AnswerRecord {
@@ -592,6 +594,9 @@ export function toAttempt(item: Record<string, unknown>): AttemptRecord {
     ...(item.startedAt ? { startedAt: String(item.startedAt) } : {}),
     ...(item.submittedAt ? { submittedAt: String(item.submittedAt) } : {}),
     ...(item.canceledAt ? { canceledAt: String(item.canceledAt) } : {}),
+    ...(item.assignmentCount !== undefined
+      ? { assignmentCount: Number(item.assignmentCount) }
+      : {}),
   };
 }
 
