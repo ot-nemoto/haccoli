@@ -1,8 +1,9 @@
 import type { AnswerContent, AttemptStatus } from "./attempt.js";
 import type { AuditRecord } from "./audit.js";
-import type { Question } from "./exam.js";
+import type { ExamDefinition, Question } from "./exam.js";
 import type { AssignmentStatus, GradeItem } from "./grading.js";
 import type { Role } from "./roles.js";
+import type { ExamDraftDefinition } from "./schemas.js";
 
 /**
  * 管理者 API（/api/admin/*、docs/design.md §14.6）のリクエスト・レスポンス型。
@@ -46,12 +47,66 @@ export type AdminUserPage = AdminPage<AdminUser>;
 /** GET /api/admin/audit */
 export type AdminAuditPage = AdminPage<AuditRecord>;
 
+/** 課題の下書きの要約（一覧・詳細） */
+export interface AdminExamDraftInfo {
+  /** 下書きの版（楽観ロック用。保存するたびに増える） */
+  version: number;
+  title: string;
+  /** 下書きの元にした公開版（未公開なら 0） */
+  baseVersion: number;
+  updatedAt: string;
+  updatedBy: { sub: string; name: string };
+  /** この下書きの内容を公開した版（公開後に保存し直すと無くなる） */
+  publishedVersion?: number;
+}
+
 /** GET /api/admin/exams の要素 */
 export interface AdminExam {
   examId: string;
+  /** 最新版の題名（未公開なら、作成したときの題名） */
   title: string;
-  latestVersion: number;
+  /** 最新版（未公開なら無い。未公開の課題には受験を発行できない） */
+  latestVersion?: number;
   updatedAt: string;
+  draft?: AdminExamDraftInfo;
+}
+
+/** GET /api/admin/exams/{examId} */
+export interface AdminExamDetail {
+  exam: AdminExam;
+  /** 最新版の定義（未公開なら無い） */
+  latest?: ExamDefinition;
+  /** 下書き（無ければ無い）。定義は編集の途中の内容で、公開の検証を通るとは限らない */
+  draft?: AdminExamDraftInfo & { definition: ExamDraftDefinition; problems: string[] };
+  /** 公開した版の履歴（新しい順） */
+  versions: { version: number; title: string; publishedAt: string }[];
+}
+
+/** PUT /api/admin/exams/{examId}/draft のリクエスト */
+export interface AdminSaveDraftRequest {
+  definition: ExamDraftDefinition;
+  /** 読み込んだ時点の下書きの版（下書きがなければ 0） */
+  version: number;
+  /** 元にした版を、今の最新版に付け替える（最新版の内容から作り直したとき） */
+  rebase?: boolean;
+  /** 新しい課題として作る */
+  create?: boolean;
+}
+
+/** PUT /api/admin/exams/{examId}/draft のレスポンス */
+export interface AdminSaveDraftResponse {
+  draft: AdminExamDraftInfo;
+  /** 公開の前に直すべき点（無ければ公開できる） */
+  problems: string[];
+}
+
+/** POST /api/admin/exams/{examId}/publish のレスポンス */
+export interface AdminPublishResponse {
+  /** published: 新しい版を作った。unchanged: 最新版と同じ内容のため作らなかった */
+  kind: "published" | "unchanged";
+  version: number;
+  /** 公開後の下書きの版（公開で下書きの版も進むため、続けて保存するときはこの版を使う） */
+  draftVersion: number;
 }
 
 /** 受験（一覧・詳細）。status は表示上の状態（期限処理の前でも、期限を過ぎた未提出は EXPIRED） */

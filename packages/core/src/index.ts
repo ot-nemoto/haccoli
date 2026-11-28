@@ -5,6 +5,7 @@ export * from "./csv.js";
 export * from "./deadline.js";
 export * from "./email.js";
 export * from "./errors.js";
+export * from "./exam-drafts.js";
 export * from "./exams.js";
 export * from "./files.js";
 export * from "./grading.js";

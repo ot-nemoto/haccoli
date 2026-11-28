@@ -117,13 +117,16 @@ export async function issueAttempt(
 
   const exam = await getExamSummary(deps, input.examId);
   if (!exam) throw new NotFoundError(`課題が見つかりません: ${input.examId}`);
+  // 管理画面で作成して、まだ公開していない課題（§14.5）
+  const examVersion = exam.latestVersion;
+  if (!examVersion) throw new ValidationError(`まだ公開していない課題です: ${input.examId}`);
 
   const attempt: AttemptRecord = {
     attemptId: randomUUID(),
     candidateSub: user.sub,
     candidateName: user.name,
     examId: exam.examId,
-    examVersion: exam.latestVersion,
+    examVersion,
     examTitle: exam.title,
     status: "NOT_STARTED",
     issuedAt: now.toISOString(),
@@ -145,7 +148,7 @@ export async function issueAttempt(
           detail: {
             candidateSub: user.sub,
             examId: exam.examId,
-            examVersion: exam.latestVersion,
+            examVersion,
             deadlineAt,
           },
         }),

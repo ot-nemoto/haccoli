@@ -86,6 +86,15 @@ describe("管理画面の表示", () => {
     expect(detailEntries({ candidateSub: "sub-x" }, names)).toEqual([["候補者", "sub-x"]]);
   });
 
+  it("課題の下書きの保存・公開の内容を表示名にする", () => {
+    expect(detailEntries({ created: true, questions: 3, baseVersion: 0, version: 1 })).toEqual([
+      ["版", "1"],
+      ["元にした版", "0"],
+      ["問題数", "3"],
+      ["新規作成", "はい"],
+    ]);
+  });
+
   it("受験の状態ごとに、できる操作を決める（core と同じ）", () => {
     expect(ATTEMPT_STATUSES.filter(canExtend)).toEqual(["NOT_STARTED", "IN_PROGRESS", "EXPIRED"]);
     expect(ATTEMPT_STATUSES.filter(canCancel)).toEqual(["NOT_STARTED", "IN_PROGRESS"]);

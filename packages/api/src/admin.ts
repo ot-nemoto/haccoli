@@ -1,4 +1,5 @@
 import {
+  type AdminExamSummary,
   type AttemptRecord,
   type AuditedUserDeps,
   assignGraders,
@@ -10,14 +11,17 @@ import {
   exportResultsCsv,
   extendAttempt,
   getAdminAttemptView,
+  getExamForEdit,
   isAuditAction,
   isRole,
   issueAttempt,
   listAttemptPage,
   listAuditLogPage,
-  listExams,
+  listExamsWithDrafts,
   listUserPage,
+  publishExamDraft,
   registerUser,
+  saveExamDraft,
   setStaffRoles,
   summarizeAttempts,
   type UserProfile,
@@ -29,6 +33,10 @@ import {
   type AdminAttemptPage,
   type AdminAuditPage,
   type AdminExam,
+  type AdminExamDetail,
+  type AdminExamDraftInfo,
+  type AdminPublishResponse,
+  type AdminSaveDraftResponse,
   type AdminSummary,
   type AdminUser,
   type AdminUserPage,
@@ -41,6 +49,8 @@ import {
   adminCreateUserRequestSchema,
   adminExtendAttemptRequestSchema,
   adminIssueAttemptRequestSchema,
+  adminPublishDraftRequestSchema,
+  adminSaveDraftRequestSchema,
   adminSetRolesRequestSchema,
 } from "@haccoli/shared/schemas";
 import { type Context, Hono } from "hono";
@@ -53,7 +63,7 @@ import { invalidRequest } from "./errors.js";
  * 業務ルール（最後の管理者の保護・ロールの組み合わせなど）と監査ログの記録は core で行う。
  * 実行者は認可済みの管理者（sub・氏名）として core に渡す。
  *
- * 利用者と監査ログは Step 7-3、受験は Step 8-2、採点結果は Step 8-3。課題の API は Step 9 で追加する。
+ * 利用者と監査ログは Step 7-3、受験は Step 8-2、採点結果は Step 8-3、課題の作成・編集は Step 9。
  */
 export function adminRoutes(deps: AdminApiDeps) {
   const app = new Hono<AppEnv>();
@@ -115,17 +125,64 @@ export function adminRoutes(deps: AdminApiDeps) {
 
   // ---- 課題・受験（Step 8-2） ----
 
-  /** 課題の一覧（受験の発行・絞り込みに使う） */
+  // ---- 課題（一覧は Step 8-2、作成・編集は Step 9） ----
+
+  /** 課題の一覧（未公開の課題と、下書きの有無を含む。受験の発行・絞り込み・編集に使う） */
   app.get("/exams", async (c) => {
-    const exams = await listExams(deps);
-    return c.json<AdminExam[]>(
-      exams.map((e) => ({
-        examId: e.examId,
-        title: e.title,
-        latestVersion: e.latestVersion,
-        updatedAt: e.updatedAt,
-      })),
+    const exams = await listExamsWithDrafts(deps);
+    return c.json<AdminExam[]>(exams.map(toAdminExam));
+  });
+
+  /** 課題の詳細（最新版・下書き・版の履歴） */
+  app.get("/exams/:examId", async (c) => {
+    const v = await getExamForEdit(deps, c.req.param("examId"));
+    return c.json<AdminExamDetail>({
+      exam: toAdminExam(v.exam),
+      ...(v.latest ? { latest: v.latest } : {}),
+      ...(v.draft
+        ? {
+            draft: {
+              ...toDraftInfo(v.draft),
+              definition: v.draft.definition,
+              problems: v.draft.problems,
+            },
+          }
+        : {}),
+      versions: v.versions,
+    });
+  });
+
+  /** 下書きの保存（create なら新しい課題として作る。楽観ロック） */
+  app.put("/exams/:examId/draft", async (c) => {
+    const body = adminSaveDraftRequestSchema.safeParse(await c.req.json().catch(() => undefined));
+    if (!body.success) throw invalidRequest(body.error);
+    const { sub, name } = c.get("user");
+    const res = await saveExamDraft(as(c), {
+      examId: c.req.param("examId"),
+      ...body.data,
+      editor: { sub, name },
+    });
+    return c.json<AdminSaveDraftResponse>(
+      { draft: toDraftInfo(res.draft), problems: res.problems },
+      body.data.create ? 201 : 200,
     );
+  });
+
+  /** 下書きを検証して、新しい版として公開する */
+  app.post("/exams/:examId/publish", async (c) => {
+    const body = adminPublishDraftRequestSchema.safeParse(
+      await c.req.json().catch(() => undefined),
+    );
+    if (!body.success) throw invalidRequest(body.error);
+    const res = await publishExamDraft(as(c), {
+      examId: c.req.param("examId"),
+      version: body.data.version,
+    });
+    return c.json<AdminPublishResponse>({
+      kind: res.kind,
+      version: res.version,
+      draftVersion: res.draftVersion,
+    });
   });
 
   /** ダッシュボード：状態ごとの件数、期限が近い受験、採点者が未割り当ての提出 */
@@ -305,5 +362,34 @@ function toAdminAttempt(a: AttemptRecord): AdminAttempt {
     ...(a.submittedAt ? { submittedAt: a.submittedAt } : {}),
     ...(a.canceledAt ? { canceledAt: a.canceledAt } : {}),
     ...(a.assignmentCount !== undefined ? { assignmentCount: a.assignmentCount } : {}),
+  };
+}
+
+function toAdminExam(e: AdminExamSummary): AdminExam {
+  return {
+    examId: e.examId,
+    title: e.title,
+    ...(e.latestVersion !== undefined ? { latestVersion: e.latestVersion } : {}),
+    updatedAt: e.updatedAt,
+    ...(e.draft ? { draft: toDraftInfo(e.draft) } : {}),
+  };
+}
+
+function toDraftInfo(d: {
+  version: number;
+  baseVersion: number;
+  updatedAt: string;
+  updatedBy: { sub: string; name: string };
+  publishedVersion?: number;
+  title?: string;
+  definition?: { title: string };
+}): AdminExamDraftInfo {
+  return {
+    version: d.version,
+    title: d.title ?? d.definition?.title ?? "",
+    baseVersion: d.baseVersion,
+    updatedAt: d.updatedAt,
+    updatedBy: { sub: d.updatedBy.sub, name: d.updatedBy.name },
+    ...(d.publishedVersion !== undefined ? { publishedVersion: d.publishedVersion } : {}),
   };
 }

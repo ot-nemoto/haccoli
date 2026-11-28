@@ -129,7 +129,7 @@ export function AdminAttemptsPage() {
             <option value="">すべて</option>
             {exams?.map((e) => (
               <option key={e.examId} value={e.examId}>
-                {e.title}（{e.examId}）
+                {e.title}（{e.examId}）{e.latestVersion === undefined && "（未公開）"}
               </option>
             ))}
           </select>
@@ -199,7 +199,9 @@ function IssueFormBody(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const active = candidates?.filter((u) => !u.disabled);
-  const selectedExam = examId || props.exams?.[0]?.examId || "";
+  // 未公開の課題（管理画面で作成して、まだ公開していないもの）には発行できない
+  const published = props.exams?.filter((x) => x.latestVersion !== undefined);
+  const selectedExam = examId || published?.[0]?.examId || "";
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -252,7 +254,7 @@ function IssueFormBody(props: {
       <label>
         課題
         <select required value={selectedExam} onChange={(e) => setExamId(e.target.value)}>
-          {props.exams?.map((x) => (
+          {published?.map((x) => (
             <option key={x.examId} value={x.examId}>
               {x.title}（{x.examId}、v{x.latestVersion}）
             </option>

@@ -19,8 +19,10 @@ export function AdminResultsPage() {
     api<AdminExam[]>("/admin/exams")
       .then((e) => {
         if (canceled) return;
-        setExams(e);
-        setExamId((cur) => cur || e[0]?.examId || "");
+        // 未公開の課題（管理画面で作成して、まだ公開していないもの）には受験が無いので出さない
+        const published = e.filter((x) => x.latestVersion !== undefined);
+        setExams(published);
+        setExamId((cur) => cur || published[0]?.examId || "");
       })
       .catch((e) => !canceled && setError(`課題の一覧を読み込めませんでした: ${messageOf(e)}`));
     return () => {

@@ -54,7 +54,7 @@ export function addExamCommands(program: Command, globals: Globals) {
         exams.map((e) => ({
           examId: e.examId,
           title: e.title,
-          latestVersion: e.latestVersion,
+          latestVersion: e.latestVersion ?? "（未公開）",
           updatedAt: jst(e.updatedAt),
         })),
       );

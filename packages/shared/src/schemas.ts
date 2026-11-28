@@ -89,6 +89,72 @@ export const examDefinitionSchema = z
   })
   .strict();
 
+/**
+ * 課題の下書き（docs/design.md §14.5）。編集の途中の内容を保存できるよう、公開時の検証
+ * （examDefinitionSchema）より緩くし、形（項目名・型・長さの上限）だけを確かめる。
+ * 未入力の問題文・選択肢の不足・qid の重複などは、公開の前に直すべき点として返す
+ */
+const draftId = z.string().max(63);
+const draftText = z.string().max(100_000);
+export const draftQuestionSchema = z
+  .object({
+    qid: draftId,
+    type: z.enum(["text", "choice", "file"]),
+    body: draftText,
+    rubric: z
+      .object({
+        body: draftText.optional(),
+        points: z.number().nonnegative().optional(),
+        correct: z.array(draftId).max(50).optional(),
+      })
+      .strict()
+      .optional(),
+    maxLength: z.number().int().positive().max(100_000).optional(),
+    multiple: z.boolean().optional(),
+    options: z
+      .array(z.object({ id: draftId, label: z.string().max(1_000) }).strict())
+      .max(50)
+      .optional(),
+    file: z
+      .object({
+        maxSizeMB: z.number().positive().max(20).optional(),
+        extensions: z.array(z.literal(".zip")).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export const examDraftSchema = z
+  .object({
+    examId: id,
+    title: z.string().max(200),
+    intro: draftText,
+    questions: z.array(draftQuestionSchema).max(100),
+  })
+  .strict();
+
+export type DraftQuestion = z.infer<typeof draftQuestionSchema>;
+export type ExamDraftDefinition = z.infer<typeof examDraftSchema>;
+
+/** PUT /api/admin/exams/{examId}/draft */
+export const adminSaveDraftRequestSchema = z
+  .object({
+    definition: examDraftSchema,
+    /** 読み込んだ時点の下書きの版（下書きがなければ 0）。楽観ロックに使う */
+    version: z.number().int().nonnegative(),
+    /** 元にした版を、今の最新版に付け替える（最新版の内容から作り直したとき）。元にした版はサーバーが決める */
+    rebase: z.boolean().default(false),
+    /** 新しい課題として作る（既にある課題 ID なら 409） */
+    create: z.boolean().default(false),
+  })
+  .strict();
+
+/** POST /api/admin/exams/{examId}/publish */
+export const adminPublishDraftRequestSchema = z
+  .object({ version: z.number().int().positive() })
+  .strict();
+
 export type Rubric = z.infer<typeof rubricSchema>;
 export type TextQuestion = z.infer<typeof textQuestionSchema>;
 export type ChoiceQuestion = z.infer<typeof choiceQuestionSchema>;
