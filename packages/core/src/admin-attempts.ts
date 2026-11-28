@@ -131,10 +131,8 @@ export async function listAttemptPage(
   );
   const page = await readSourcesPage(sources, { limit: opts.limit, cursor, token: at });
   const now = new Date(at);
-  return {
-    ...page,
-    items: page.items.map(toAttempt).map((a) => ({ ...a, status: effectiveStatus(a, now) })),
-  };
+  const items = page.items.map(toAttempt).map((a) => ({ ...a, status: effectiveStatus(a, now) }));
+  return { ...page, items: await withAssignmentCounts(deps, items) };
 }
 
 /** 読み込み元のキーか（同じ状態の、期限の区切りの内側か）。外側のキーから Query すると DynamoDB が拒否する */
@@ -216,16 +214,18 @@ export async function summarizeAttempts(deps: DataDeps): Promise<AttemptSummary>
         values: { ":zero": 0 },
       }),
     )
-      .then(withoutAssignments(deps))
+      .then((list) => withAssignmentCounts(deps, list))
       .then((list) =>
-        list.sort((a, b) => (a.submittedAt ?? "").localeCompare(b.submittedAt ?? "")),
+        list
+          .filter((a) => a.assignmentCount === 0)
+          .sort((a, b) => (a.submittedAt ?? "").localeCompare(b.submittedAt ?? "")),
       ),
   ]);
 
   return {
     at,
     counts: Object.fromEntries(countEntries) as Record<AttemptStatus, number>,
-    dueSoon: dueSoon.slice(0, SUMMARY_ITEMS),
+    dueSoon: await withAssignmentCounts(deps, dueSoon.slice(0, SUMMARY_ITEMS)),
     dueSoonTotal: dueSoon.length,
     unassigned: unassigned.slice(0, SUMMARY_ITEMS),
     unassignedTotal: unassigned.length,
@@ -233,29 +233,35 @@ export async function summarizeAttempts(deps: DataDeps): Promise<AttemptSummary>
 }
 
 /**
- * 割り当て数を持たない受験から、割り当てのアイテムがあるものを除く。割り当て数は assignGraders が
+ * 割り当て数を持たない受験に、割り当てのアイテム（ASSIGN#）の件数を補う。割り当て数は assignGraders が
  * 割り当てのときに初期化するが、それより前に割り当てた既存データは持たない（割り当てても、採点を
- * 始めるまでは SUBMITTED のまま）。割り当て数が 0 の受験はそのまま未割り当てとする
+ * 始めるまでは SUBMITTED のまま）。補った後は、どの受験も割り当て数を持つ（まだ割り当てていなければ 0）
  */
-function withoutAssignments(deps: DataDeps) {
-  return async (list: AttemptRecord[]): Promise<AttemptRecord[]> => {
-    const assigned = await Promise.all(
-      list.map(async (a) => {
-        if (a.assignmentCount !== undefined) return false;
+async function withAssignmentCounts(
+  deps: DataDeps,
+  list: AttemptRecord[],
+): Promise<AttemptRecord[]> {
+  return Promise.all(
+    list.map(async (a) => {
+      if (a.assignmentCount !== undefined) return a;
+      let count = 0;
+      let startKey: Record<string, unknown> | undefined;
+      do {
         const res = await deps.ddb.send(
           new QueryCommand({
             TableName: deps.tableName,
             KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
             ExpressionAttributeValues: { ":pk": keys.attemptPk(a.attemptId), ":sk": "ASSIGN#" },
             Select: "COUNT",
-            Limit: 1,
+            ExclusiveStartKey: startKey,
           }),
         );
-        return (res.Count ?? 0) > 0;
-      }),
-    );
-    return list.filter((_, i) => !assigned[i]);
-  };
+        count += res.Count ?? 0;
+        startKey = res.LastEvaluatedKey;
+      } while (startKey);
+      return { ...a, assignmentCount: count };
+    }),
+  );
 }
 
 async function queryAll(

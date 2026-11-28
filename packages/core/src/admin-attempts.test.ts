@@ -203,6 +203,16 @@ describe("listAttemptPage", () => {
     expect(rest).toHaveLength(12);
   });
 
+  it("割り当て数を必ず返す（持たない既存データは、割り当てのアイテムを数えて補う）", async () => {
+    assignments.add("ATTEMPT#sub-1");
+    const page = await listAttemptPage(deps, { status: "SUBMITTED" });
+    expect(page.items.map((a) => [a.attemptId, a.assignmentCount])).toEqual([
+      ["sub-3", 0],
+      ["sub-1", 1],
+      ["sub-2", 1],
+    ]);
+  });
+
   it("課題で絞り込む（フィルタで空になった応答は読み飛ばす）", async () => {
     const page = await listAttemptPage(deps, { examId: "other" });
     expect(page).toEqual({ items: [expect.objectContaining({ attemptId: "ns-2" })] });
@@ -261,7 +271,10 @@ describe("summarizeAttempts", () => {
       .map((c) => c.args[0].input)
       .filter((i) => i.KeyConditionExpression === "PK = :pk AND begins_with(SK, :sk)")
       .map((i) => i.ExpressionAttributeValues?.[":pk"]);
-    expect(checked.sort()).toEqual(["ATTEMPT#sub-1", "ATTEMPT#sub-3"]);
+    expect(checked).toContain("ATTEMPT#sub-1");
+    expect(checked).not.toContain("ATTEMPT#sub-2");
+    // 期限が近い受験も、割り当て数を補って返す
+    expect(s.dueSoon.map((x) => x.assignmentCount)).toEqual([0, 0]);
   });
 });
 
