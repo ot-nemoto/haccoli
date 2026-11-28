@@ -69,7 +69,8 @@ export function AdminUsersPage() {
       )}
       <RegisterForm
         onRegistered={(user) => {
-          setItems((prev) => [user, ...(prev ?? [])]);
+          // 一覧は Scan の順なので先頭には足さず、読み直す（続きのページとの重複・絞り込みの不一致を避ける）
+          void load({ role });
           setNotice(
             `${user.name} さんを${rolesLabel(user.roles)}として登録しました。ログイン URL（${loginUrl(user.roles)}）を連絡してください。招待メールは送りません。`,
           );
@@ -110,7 +111,13 @@ export function AdminUsersPage() {
           </thead>
           <tbody>
             {items.map((u) => (
-              <UserRow key={u.sub} user={u} onChanged={replace} onNotice={setNotice} />
+              <UserRow
+                key={u.sub}
+                user={u}
+                onChanged={replace}
+                onStale={() => void load({ role })}
+                onNotice={setNotice}
+              />
             ))}
           </tbody>
         </table>
@@ -296,6 +303,8 @@ type Mode =
 function UserRow(props: {
   user: AdminUser;
   onChanged: (user: AdminUser) => void;
+  /** 操作が失敗し、画面の行がサーバーと食い違っているかもしれない（一覧を読み直す） */
+  onStale: () => void;
   onNotice: (message: string) => void;
 }) {
   const { user } = props;
@@ -317,9 +326,17 @@ function UserRow(props: {
       setMode({ kind: "view" });
     } catch (e) {
       setError(messageOf(e));
+      // ロールの変更は付与・削除を 1 つずつ行うため、途中まで反映されていることがある
+      props.onStale();
     } finally {
       setBusy(false);
     }
+  };
+
+  /** 操作の枠を開く・閉じる。前の操作のエラーは消す */
+  const switchMode = (next: Mode) => {
+    setError(undefined);
+    setMode(next);
   };
 
   const saveRoles = (roles: StaffRole[]) =>
@@ -367,7 +384,7 @@ function UserRow(props: {
                   <button
                     type="button"
                     className="link"
-                    onClick={() => setMode({ kind: "roles", roles: currentStaffRoles })}
+                    onClick={() => switchMode({ kind: "roles", roles: currentStaffRoles })}
                   >
                     ロールを変更
                   </button>
@@ -376,7 +393,7 @@ function UserRow(props: {
                   <button
                     type="button"
                     className="link danger-link"
-                    onClick={() => setMode({ kind: "confirm-disable" })}
+                    onClick={() => switchMode({ kind: "confirm-disable" })}
                   >
                     無効化
                   </button>
@@ -415,7 +432,7 @@ function UserRow(props: {
                   type="button"
                   className="secondary"
                   disabled={busy}
-                  onClick={() => setMode({ kind: "view" })}
+                  onClick={() => switchMode({ kind: "view" })}
                 >
                   キャンセル
                 </button>
@@ -428,7 +445,7 @@ function UserRow(props: {
                 confirmLabel="ロールを外す"
                 busy={busy}
                 onConfirm={() => void saveRoles(mode.roles)}
-                onCancel={() => setMode({ kind: "view" })}
+                onCancel={() => switchMode({ kind: "view" })}
               >
                 {user.name} さんから
                 {rolesLabel(rolesChange(user.roles, mode.roles).removes)}
@@ -441,7 +458,7 @@ function UserRow(props: {
                 confirmLabel="無効化する"
                 busy={busy}
                 onConfirm={() => void disable()}
-                onCancel={() => setMode({ kind: "view" })}
+                onCancel={() => switchMode({ kind: "view" })}
               >
                 {user.name} さん（{user.email}）を無効化します。すぐにログインできなくなります。
                 <strong>画面から有効に戻すことはできません。</strong>

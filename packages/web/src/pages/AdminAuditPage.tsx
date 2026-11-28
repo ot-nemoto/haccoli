@@ -40,6 +40,7 @@ export function AdminAuditPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [names, setNames] = useState(new Map<string, string>());
+  const [namesIncomplete, setNamesIncomplete] = useState(false);
   const latest = useRef(0);
 
   const load = useCallback(
@@ -62,7 +63,14 @@ export function AdminAuditPage() {
   );
 
   useEffect(() => {
-    if (month) void load({ month, action });
+    if (month) {
+      void load({ month, action });
+    } else {
+      // 月を消したら一覧も消す（前の月の続きを、月を付けずに読まないようにする）
+      latest.current++;
+      setItems(undefined);
+      setCursor(undefined);
+    }
   }, [load, month, action]);
 
   // 監査ログの対象は sub で記録している（§14.4）。表示のときだけ、利用者の一覧から氏名を補う。
@@ -72,16 +80,21 @@ export function AdminAuditPage() {
     (async () => {
       const map = new Map<string, string>();
       let next: string | undefined;
-      for (let i = 0; i < NAME_PAGES; i++) {
-        const page = await api<AdminUserPage>(
-          withQuery("/admin/users", { limit: "100", cursor: next }),
-        );
-        for (const u of page.items) map.set(u.sub, u.name);
-        next = page.cursor;
-        if (!next) break;
+      try {
+        for (let i = 0; i < NAME_PAGES; i++) {
+          const page = await api<AdminUserPage>(
+            withQuery("/admin/users", { limit: "100", cursor: next }),
+          );
+          for (const u of page.items) map.set(u.sub, u.name);
+          next = page.cursor;
+          if (!next) break;
+        }
+      } catch {
+        // 読めた分は使う。引けなかった人は sub だけになるので、そのことを表示する
+        if (!canceled) setNamesIncomplete(true);
       }
       if (!canceled) setNames(map);
-    })().catch(() => undefined);
+    })();
     return () => {
       canceled = true;
     };
@@ -123,6 +136,13 @@ export function AdminAuditPage() {
           {error}
         </p>
       )}
+      {namesIncomplete && (
+        <p className="muted">
+          利用者の氏名を一部読み込めませんでした。対象が sub
+          だけの行は、利用者の一覧と突き合わせてください。
+        </p>
+      )}
+      {!month && <p>月を指定してください。</p>}
       {!items && loading && <p>読み込み中…</p>}
       {items?.length === 0 && <p>この条件の記録はありません。</p>}
       {items && items.length > 0 && (

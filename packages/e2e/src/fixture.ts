@@ -159,9 +159,16 @@ export async function prepareStaff(ctx: Context): Promise<StaffFixture> {
       `${ADMIN_EMAIL} が有効な管理者ではありません。npm run admin -- -e dev admin:add で登録してください`,
     );
   }
-  const grader =
+  let grader =
     (await findUserByEmail(ctx.deps, GRADER_EMAIL)) ??
     (await registerUser(ctx.deps, { email: GRADER_EMAIL, name: "E2E 採点者", roles: ["grader"] }));
+  if (!grader.roles.includes("grader") || grader.disabled) {
+    throw new Error(`${GRADER_EMAIL} が有効な採点者ではありません`);
+  }
+  // 前回の後片付けが途中で失敗して admin が残っていたら、外してから始める（テストで付与するため）
+  if (grader.roles.includes("admin")) {
+    grader = await removeRole(ctx.deps, { email: GRADER_EMAIL, role: "admin" });
+  }
   return {
     ctx,
     webUrl: process.env.HACCOLI_E2E_BASE_URL || ctx.outputs.WebUrl,
