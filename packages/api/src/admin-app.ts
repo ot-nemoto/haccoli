@@ -1,3 +1,4 @@
+import { defaultIsContentTypeBinary } from "hono/aws-lambda";
 import { adminRoutes } from "./admin.js";
 import { requireRole } from "./auth.js";
 import { createBaseApp } from "./base.js";
@@ -17,3 +18,13 @@ export function createAdminApp(deps: AdminApiDeps) {
   app.route("/admin", adminRoutes(deps));
   return app;
 }
+
+/**
+ * 管理者 API の Lambda のアダプターの設定。hono/aws-lambda はテキストの応答を res.text() で読み直して
+ * 返すため、先頭の BOM が取り除かれる。採点結果の CSV（Excel で文字化けしないよう BOM を付ける）は
+ * バイナリ（base64）として返し、バイト列のまま届ける
+ */
+export const adminLambdaOptions = {
+  isContentTypeBinary: (contentType: string) =>
+    /^text\/csv\b/i.test(contentType) || defaultIsContentTypeBinary(contentType),
+};

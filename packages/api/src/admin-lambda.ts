@@ -4,7 +4,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { s3FileStore } from "@haccoli/core";
 import { handle } from "hono/aws-lambda";
-import { createAdminApp } from "./admin-app.js";
+import { adminLambdaOptions, createAdminApp } from "./admin-app.js";
 import { requiredEnv } from "./env.js";
 
 /** 管理者 API の Lambda（docs/design.md §14.3） */
@@ -22,4 +22,5 @@ export const handler = handle(
     // 提出ファイルのダウンロード用 URL の発行（GetObject）のみ
     files: s3FileStore(new S3Client({}), requiredEnv("SUBMISSIONS_BUCKET")),
   }),
+  adminLambdaOptions,
 );
