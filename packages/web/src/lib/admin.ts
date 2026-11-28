@@ -1,5 +1,6 @@
 import {
   type Actor,
+  ADMIN_ATTEMPT_STATUS_LABELS,
   type AttemptStatus,
   AUDIT_ACTION_LABELS,
   type AuditDetail,
@@ -108,19 +109,8 @@ export function detailEntries(
 
 // ---- 受験 ----
 
-/**
- * 管理画面の状態の表示名。候補者の画面（ATTEMPT_STATUS_LABELS）と違い、提出後の採点の進み具合を
- * 区別する
- */
-export const ADMIN_STATUS_LABELS: Record<AttemptStatus, string> = {
-  NOT_STARTED: "未着手",
-  IN_PROGRESS: "回答中",
-  SUBMITTED: "提出済み",
-  GRADING: "採点中",
-  GRADED: "採点完了",
-  EXPIRED: "期限切れ（未提出）",
-  CANCELED: "取消",
-};
+/** 管理画面の状態の表示名（採点中・採点完了を区別する。CLI と同じ） */
+export const ADMIN_STATUS_LABELS = ADMIN_ATTEMPT_STATUS_LABELS;
 
 /** 期限を変更できる状態（attempt:extend と同じ。期限切れからも戻せる） */
 export const canExtend = (s: AttemptStatus) =>

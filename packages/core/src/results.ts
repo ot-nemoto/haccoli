@@ -1,3 +1,4 @@
+import { ADMIN_ATTEMPT_STATUS_LABELS, ASSIGNMENT_STATUS_LABELS } from "@haccoli/shared";
 import {
   type AssignmentRecord,
   type AttemptRecord,
@@ -7,8 +8,10 @@ import {
   listAttempts,
 } from "./attempts.js";
 import { type AuditDeps, writeAudit } from "./audit.js";
+import { toCsv } from "./csv.js";
+import { NotFoundError } from "./errors.js";
 import type { DataDeps } from "./exams.js";
-import { getExamVersion } from "./exams.js";
+import { getExamSummary, getExamVersion } from "./exams.js";
 import { getUserBySub } from "./users.js";
 
 export interface ResultQuestion {
@@ -34,6 +37,10 @@ export async function collectResults(
   deps: DataDeps & AuditDeps,
   examId: string,
 ): Promise<{ questions: ResultQuestion[]; rows: ResultRow[] }> {
+  // 課題 ID の誤りを、空の CSV（と出力の記録）にしない
+  if (!(await getExamSummary(deps, examId))) {
+    throw new NotFoundError(`課題が見つかりません: ${examId}`);
+  }
   const attempts = (await listAttempts(deps)).filter((a) => a.examId === examId);
 
   const questions: ResultQuestion[] = [];
@@ -84,4 +91,53 @@ export async function collectResults(
     detail: { attempts: attempts.length, rows: rows.length },
   });
   return { questions, rows };
+}
+
+/**
+ * 採点結果の CSV（CLI の result:export と管理者 API で同じ形式。docs/design.md §8）。
+ * 受験 × 採点者ごとに 1 行。問題ごとの点数・コメントの列は questions の順。
+ */
+export function resultsCsv(questions: ResultQuestion[], rows: ResultRow[]): string {
+  const header = [
+    "attemptId",
+    "examVersion",
+    "candidateName",
+    "candidateEmail",
+    "attemptStatus",
+    "submittedAt",
+    "graderName",
+    "graderEmail",
+    "gradeStatus",
+    "finalizedAt",
+    "totalScore",
+    ...questions.flatMap((q) => [
+      `${q.qid}_score${q.points !== undefined ? `(/${q.points})` : ""}`,
+      `${q.qid}_comment`,
+    ]),
+    "overallComment",
+  ];
+  const body = rows.map((r) => {
+    const items = r.grade?.items ?? {};
+    const scores = Object.values(items)
+      .map((i) => i.score)
+      .filter((s): s is number => s !== undefined);
+    return [
+      r.attempt.attemptId,
+      r.attempt.examVersion,
+      r.attempt.candidateName,
+      r.candidateEmail,
+      `${r.attempt.status}（${ADMIN_ATTEMPT_STATUS_LABELS[r.attempt.status]}）`,
+      r.attempt.submittedAt,
+      r.assignment?.graderName,
+      r.graderEmail,
+      r.assignment
+        ? `${r.assignment.status}（${ASSIGNMENT_STATUS_LABELS[r.assignment.status]}）`
+        : undefined,
+      r.assignment?.finalizedAt,
+      scores.length > 0 ? scores.reduce((a, b) => a + b, 0) : undefined,
+      ...questions.flatMap((q) => [items[q.qid]?.score, items[q.qid]?.comment]),
+      r.grade?.overallComment || undefined,
+    ];
+  });
+  return toCsv([header, ...body]);
 }
