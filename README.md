@@ -47,9 +47,9 @@ HACCOLI_E2E_BASE_URL=http://localhost:5173 npm run e2e
 - 受験の管理画面のテストは、実行ごとの候補者に画面から受験を発行し、e2e-grader の割り当て・期限の変更・取消と、採点結果の CSV の出力を行う。ダウンロードした CSV は Playwright の一時ファイルのまま読み、コピーしない。候補者は終了時に削除する
 - 課題の管理画面のテストは、実行ごとに `e2e-exam-…` の課題を画面で作って公開し、終了時に IAM の権限で削除する（`@haccoli/admin-cli/testing` の `deleteE2eExam`。dev の `e2e-exam-` で始まる課題だけ消せる）
 - 課題 `exams/sample-2026` を投入する（内容が同じなら何もしない）
-- **CSP の違反**：各テストで開いた画面の `securitypolicyviolation` を集め、1 件でもあればそのテストを失敗にする（`openPage` の後片付けで確かめる）。失敗のメッセージには、違反した項目（`violatedDirective`）・読み込もうとしたもの（`blockedURI`）・画面を出す。画面の動きに出ない違反（画像・スタイルの読み込みが止められたなど）や、ライブラリの追加・外部への通信で CSP の許可を足し忘れたことに気づくため
+- **CSP の違反**：各テストで開いた画面の `securitypolicyviolation` を集め、1 件でもあればそのテストを失敗にする（`openPage` の後片付けで、`expect.soft` で確かめる。テスト本体の失敗と違反の両方が報告に出る）。失敗のメッセージには、違反した項目（`violatedDirective`）・読み込もうとしたもの（`blockedURI`）・画面を出す。画面の動きに出ない違反（画像・スタイルの読み込みが止められたなど）や、ライブラリの追加・外部への通信で CSP の許可を足し忘れたことに気づくため
   - ローカルの SPA（`HACCOLI_E2E_BASE_URL=http://localhost:5173`）には CSP が付かないため、違反は常に 0 件になり、確かめられない。CSP に関わる変更は、dev にデプロイした後の `npm run e2e` で確かめる
-  - ブラウザは Chromium（`Desktop Chrome`）だけ。画面はエンジンで差が出やすい機能（Worker・`blob:`・`eval`）を使っていないため、WebKit（Safari）は足していない
+  - ブラウザは Chromium（`Desktop Chrome`）だけ。画面はエンジンで差が出やすい機能（Worker・`eval`）を使っていないため、WebKit（Safari）は足していない（`blob:` は採点結果の CSV のダウンロードにだけ使う）
 - 通常の CI（`npm test`）には含めない。失敗時のスクリーンショットとトレースは `packages/e2e/test-results/` に出る。トレースにはトークンを含む通信が残るため、共有しない（確認後に削除する）
 
 ## デプロイ（GitHub Actions）
