@@ -66,7 +66,14 @@ test.describe
       await q1
         .getByLabel("問題文（Markdown）")
         .fill("あなたの好きな **アルゴリズム** を説明してください。");
+      // 保存できない値は、保存の前に項目を示す
+      await q1.getByLabel("配点").fill("-1");
+      await page.getByRole("button", { name: "下書きを保存" }).click();
+      await expect(page.getByRole("region", { name: "保存できない値" })).toContainText(
+        "問 1の配点: 0 以上の数を入れてください",
+      );
       await q1.getByLabel("配点").fill("10");
+      await expect(page.getByRole("region", { name: "保存できない値" })).toHaveCount(0);
 
       // 選択式の問題を足す
       await page
@@ -83,6 +90,16 @@ test.describe
       await q2.getByLabel("選択肢 3 の表示").fill("PUT");
       await q2.getByLabel("選択肢 1 は正解").check();
       await q2.getByLabel("選択肢 3 は正解").check();
+      // 正解の選択肢を消すと正解からも外れ、消えない ID が残らない（足し直して正解に戻す）
+      await q2.getByRole("button", { name: "選択肢を追加" }).click();
+      await q2.getByLabel("選択肢 4 の表示").fill("DELETE");
+      await q2.getByLabel("選択肢 4 は正解").check();
+      await q2
+        .getByRole("row")
+        .filter({ has: page.getByLabel("選択肢 4 の表示") })
+        .getByRole("button", { name: "削除" })
+        .click();
+      await expect(q2.getByLabel("選択肢 4 の表示")).toHaveCount(0);
       await q2.getByLabel("配点").fill("5");
       await expect(page.getByText("保存していない変更があります")).toBeVisible();
 
