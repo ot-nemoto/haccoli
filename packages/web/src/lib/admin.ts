@@ -65,6 +65,8 @@ const DETAIL_LABELS: Record<string, string> = {
   baseVersion: "元にした版",
   questions: "問題数",
   created: "新規作成",
+  rebased: "最新版から作り直した",
+  unchanged: "最新版と同じ内容（版を作らず）",
   title: "題名",
   deadlineAt: "期限",
   deadlineBefore: "変更前の期限",

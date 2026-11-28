@@ -129,7 +129,7 @@ export function AdminAttemptsPage() {
             <option value="">すべて</option>
             {exams?.map((e) => (
               <option key={e.examId} value={e.examId}>
-                {e.title}（{e.examId}）
+                {e.title}（{e.examId}）{e.latestVersion === undefined && "（未公開）"}
               </option>
             ))}
           </select>
