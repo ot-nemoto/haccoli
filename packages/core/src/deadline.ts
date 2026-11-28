@@ -33,7 +33,9 @@ export function validateDeadlineDate(date: string, now: Date, force = false): st
   const today = jstDate(now);
   if (date < today) throw new ValidationError(`過去の日付は指定できません: ${date}`);
   if (date === today && !force) {
-    throw new ValidationError(`当日を期限にする場合は --force を指定してください: ${date}`);
+    throw new ValidationError(
+      `当日は期限にできません。翌日以降を指定してください（CLI では --force で当日にできます）: ${date}`,
+    );
   }
   return deadlineAt;
 }

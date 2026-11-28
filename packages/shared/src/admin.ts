@@ -1,4 +1,7 @@
+import type { AnswerContent, AttemptStatus } from "./attempt.js";
 import type { AuditRecord } from "./audit.js";
+import type { Question } from "./exam.js";
+import type { AssignmentStatus, GradeItem } from "./grading.js";
 import type { Role } from "./roles.js";
 
 /**
@@ -42,3 +45,104 @@ export type AdminUserPage = AdminPage<AdminUser>;
 
 /** GET /api/admin/audit */
 export type AdminAuditPage = AdminPage<AuditRecord>;
+
+/** GET /api/admin/exams の要素 */
+export interface AdminExam {
+  examId: string;
+  title: string;
+  latestVersion: number;
+  updatedAt: string;
+}
+
+/** 受験（一覧・詳細）。status は表示上の状態（期限処理の前でも、期限を過ぎた未提出は EXPIRED） */
+export interface AdminAttempt {
+  attemptId: string;
+  candidateSub: string;
+  candidateName: string;
+  examId: string;
+  examVersion: number;
+  examTitle: string;
+  status: AttemptStatus;
+  issuedAt: string;
+  deadlineAt: string;
+  startedAt?: string;
+  submittedAt?: string;
+  canceledAt?: string;
+  /** 採点者の割り当て数（一度も割り当てていなければ無い） */
+  assignmentCount?: number;
+}
+
+/** GET /api/admin/attempts?status=&examId=（進行中 → 提出済み以降 → 期限切れ → 取消の順） */
+export type AdminAttemptPage = AdminPage<AdminAttempt>;
+
+/** POST /api/admin/attempts */
+export interface AdminIssueAttemptRequest {
+  /** 候補者のメールアドレス */
+  email: string;
+  examId: string;
+  /** 期限日（YYYY-MM-DD。その日の 23:59:59 JST まで。翌日以降） */
+  deadline: string;
+}
+
+/** POST /api/admin/attempts/{attemptId}/extend */
+export interface AdminExtendAttemptRequest {
+  deadline: string;
+}
+
+/** POST /api/admin/attempts/{attemptId}/assign */
+export interface AdminAssignRequest {
+  graderEmails: string[];
+}
+
+/** POST /api/admin/attempts/{attemptId}/assign のレスポンス */
+export interface AdminAssignResponse {
+  attempt: AdminAttempt;
+  /** 割り当てた採点者 */
+  assigned: { sub: string; name: string }[];
+  /** 割り当て済みだったため、何もしなかった採点者 */
+  skipped: { sub: string; name: string }[];
+}
+
+export interface AdminAssignment {
+  graderSub: string;
+  graderName: string;
+  assignedAt: string;
+  status: AssignmentStatus;
+  finalizedAt?: string;
+}
+
+export interface AdminGrade {
+  graderSub: string;
+  items: Record<string, GradeItem>;
+  overallComment: string;
+  updatedAt: string;
+  finalizedAt?: string;
+}
+
+/** GET /api/admin/attempts/{attemptId} */
+export interface AdminAttemptDetail {
+  attempt: AdminAttempt;
+  /** 候補者のメールアドレス（個人データを削除した後は無い） */
+  candidateEmail?: string;
+  intro: string;
+  /** 採点基準（rubric）を含む */
+  questions: Question[];
+  answers: Record<string, { content: AnswerContent; updatedAt: string }>;
+  assignments: AdminAssignment[];
+  /** すべての採点者の採点（下書きを含む） */
+  grades: AdminGrade[];
+}
+
+/** GET /api/admin/summary（ダッシュボード） */
+export interface AdminSummary {
+  at: string;
+  counts: Record<AttemptStatus, number>;
+  /** 期限が近い未着手・回答中（期限が近い順） */
+  dueSoon: AdminAttempt[];
+  dueSoonTotal: number;
+  /** 期限が近いとみなす日数 */
+  dueSoonDays: number;
+  /** 提出済みで、採点者が割り当てられていない受験（提出が古い順） */
+  unassigned: AdminAttempt[];
+  unassignedTotal: number;
+}

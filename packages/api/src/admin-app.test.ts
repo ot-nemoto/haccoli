@@ -16,6 +16,7 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import type { FileStore } from "@haccoli/core";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import { mockClient } from "aws-sdk-client-mock";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +33,12 @@ const deps = {
   cognito: new CognitoIdentityProviderClient({ region: "ap-northeast-1" }),
   userPoolId: "pool",
   now: () => new Date("2026-11-27T16:00:00Z"), // JST 2026-11-28
+  files: {
+    createUploadUrl: vi.fn(),
+    getObjectInfo: vi.fn(),
+    deleteObject: vi.fn(),
+    createDownloadUrl: vi.fn(async (key: string) => `https://s3.example/${key}`),
+  } as unknown as FileStore,
 };
 const adminApp = createAdminApp(deps);
 const mainApp = createApp({ ddb, tableName: "table" });
@@ -46,9 +53,19 @@ const ADMIN_ROUTES = [
   { method: "PUT", path: "/api/admin/users/:sub/roles" },
   { method: "POST", path: "/api/admin/users/:sub/disable" },
   { method: "GET", path: "/api/admin/audit" },
+  { method: "GET", path: "/api/admin/exams" },
+  { method: "GET", path: "/api/admin/summary" },
+  { method: "GET", path: "/api/admin/attempts" },
+  { method: "POST", path: "/api/admin/attempts" },
+  { method: "GET", path: "/api/admin/attempts/:attemptId" },
+  { method: "POST", path: "/api/admin/attempts/:attemptId/extend" },
+  { method: "POST", path: "/api/admin/attempts/:attemptId/cancel" },
+  { method: "POST", path: "/api/admin/attempts/:attemptId/assign" },
+  { method: "POST", path: "/api/admin/attempts/:attemptId/answers/:qid/download-url" },
 ] as const;
 
-const concrete = (path: string) => path.replace(":sub", "sub-t");
+const concrete = (path: string) =>
+  path.replace(":sub", "sub-t").replace(":attemptId", "att-1").replace(":qid", "q1");
 
 const profile = (sub: string, roles: string[], extra: Record<string, unknown> = {}) => ({
   PK: `USER#${sub}`,
@@ -396,5 +413,353 @@ describe("GET /api/admin/audit", () => {
     expect((await admin("GET", "/api/admin/audit?month=202610")).status).toBe(400);
     expect((await admin("GET", "/api/admin/audit?month=2026-13")).status).toBe(400);
     expect((await admin("GET", "/api/admin/audit?action=user.delete")).status).toBe(400);
+  });
+});
+
+// ---- 受験（Step 8-2） ----
+
+const ATT = {
+  PK: "ATTEMPT#att-1",
+  SK: "META",
+  GSI2PK: "STATUS#IN_PROGRESS",
+  GSI2SK: "2026-12-05T14:59:59.999Z",
+  type: "Attempt",
+  attemptId: "att-1",
+  candidateSub: "sub-c",
+  candidateName: "氏名-sub-c",
+  examId: "ex",
+  examVersion: 2,
+  examTitle: "課題",
+  status: "IN_PROGRESS",
+  issuedAt: "2026-11-01T00:00:00.000Z",
+  deadlineAt: "2026-12-05T14:59:59.999Z",
+  startedAt: "2026-11-02T00:00:00.000Z",
+};
+
+/** 受験 att-1・課題 ex・利用者を返す DynamoDB */
+function withAttempt(meta: Record<string, unknown> = ATT, extra: Record<string, unknown>[] = []) {
+  ddbMock.on(GetCommand).callsFake((i) => {
+    const pk = String(i.Key.PK);
+    if (pk.startsWith("USER#")) return { Item: users.get(pk.replace("USER#", "")) };
+    if (pk === "ATTEMPT#att-1") return { Item: meta };
+    if (pk === "EXAM#ex" && i.Key.SK === "META") {
+      return { Item: { examId: "ex", title: "課題", latestVersion: 2, updatedAt: "x" } };
+    }
+    if (pk === "EXAM#ex") {
+      return {
+        Item: {
+          definition: {
+            examId: "ex",
+            title: "課題",
+            intro: "説明",
+            questions: [{ qid: "q1", type: "file", body: "b", rubric: "基準" }],
+          },
+        },
+      };
+    }
+    return {};
+  });
+  ddbMock
+    .on(QueryCommand, { TableName: "table", KeyConditionExpression: "PK = :pk" })
+    .callsFake((i) => ({
+      Items: i.ExpressionAttributeValues[":pk"] === "ATTEMPT#att-1" ? [meta, ...extra] : [],
+    }));
+  ddbMock.on(QueryCommand, { TableName: "table", IndexName: "GSI1" }).callsFake((i) => ({
+    Items: [...users.values()].filter(
+      (u) => `EMAIL#${u.email}` === i.ExpressionAttributeValues[":pk"],
+    ),
+  }));
+}
+
+/** 監査ログを同じトランザクションで書いた記録 */
+const auditInTransaction = () =>
+  ddbMock
+    .commandCalls(TransactWriteCommand)
+    .flatMap((c) => c.args[0].input.TransactItems ?? [])
+    .map((t) => t.Put)
+    .filter((p) => p?.TableName === "audit")
+    .map((p) => p?.Item);
+
+describe("GET /api/admin/exams", () => {
+  it("課題の一覧を返す", async () => {
+    ddbMock.on(ScanCommand).resolves({
+      Items: [
+        {
+          PK: "EXAM#ex",
+          SK: "META",
+          examId: "ex",
+          title: "課題",
+          latestVersion: 2,
+          updatedAt: "u",
+        },
+      ],
+    });
+    const res = await admin("GET", "/api/admin/exams");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { examId: "ex", title: "課題", latestVersion: 2, updatedAt: "u" },
+    ]);
+  });
+});
+
+describe("GET /api/admin/attempts", () => {
+  it("状態で絞り込むときは GSI2 を Query し、表示上の状態で返す", async () => {
+    ddbMock.on(QueryCommand, { TableName: "table", IndexName: "GSI2" }).resolves({ Items: [ATT] });
+    const res = await admin("GET", "/api/admin/attempts?status=IN_PROGRESS&examId=ex&limit=10");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: { attemptId: string; status: string }[] };
+    expect(body.items.map((a) => [a.attemptId, a.status])).toEqual([["att-1", "IN_PROGRESS"]]);
+    const q = ddbMock.commandCalls(QueryCommand)[0]?.args[0].input;
+    expect(q?.IndexName).toBe("GSI2");
+    expect(q?.ExpressionAttributeValues).toMatchObject({
+      ":pk": "STATUS#IN_PROGRESS",
+      ":examId": "ex",
+    });
+    expect(ddbMock.commandCalls(ScanCommand)).toHaveLength(0);
+  });
+
+  it("不正な状態・課題・件数・カーソルは 400", async () => {
+    expect((await admin("GET", "/api/admin/attempts?status=DONE")).status).toBe(400);
+    expect((await admin("GET", "/api/admin/attempts?examId=")).status).toBe(400);
+    expect((await admin("GET", "/api/admin/attempts?limit=0")).status).toBe(400);
+    expect((await admin("GET", "/api/admin/attempts?cursor=xxx")).status).toBe(400);
+  });
+});
+
+describe("GET /api/admin/summary", () => {
+  it("状態ごとの件数と、期限が近い受験・採点者が未割り当ての提出を返す", async () => {
+    ddbMock
+      .on(QueryCommand, { TableName: "table", IndexName: "GSI2" })
+      .callsFake((i) =>
+        i.Select === "COUNT"
+          ? { Count: i.ExpressionAttributeValues[":pk"] === "STATUS#GRADED" ? 4 : 0 }
+          : { Items: i.ExpressionAttributeValues[":pk"] === "STATUS#IN_PROGRESS" ? [ATT] : [] },
+      );
+    const res = await admin("GET", "/api/admin/summary");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.counts).toMatchObject({ GRADED: 4, IN_PROGRESS: 0 });
+    expect(body).toMatchObject({ dueSoonDays: 3, dueSoonTotal: 1, unassignedTotal: 0 });
+  });
+});
+
+describe("POST /api/admin/attempts", () => {
+  it("発行し、実行者を管理者として同じトランザクションで記録する", async () => {
+    withAttempt();
+    const res = await admin("POST", "/api/admin/attempts", {
+      email: "sub-c@example.com",
+      examId: "ex",
+      deadline: "2026-12-10",
+    });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      candidateSub: "sub-c",
+      examVersion: 2,
+      status: "NOT_STARTED",
+      deadlineAt: "2026-12-10T14:59:59.999Z",
+    });
+    expect(auditInTransaction()).toEqual([
+      expect.objectContaining({
+        action: "attempt.issue",
+        actor: { type: "admin", sub: "sub-a", name: "氏名-sub-a" },
+      }),
+    ]);
+  });
+
+  it("当日・過去の期限、候補者でない人、不正な本文は 400（書き込まない）", async () => {
+    withAttempt();
+    const post = (body: unknown) => admin("POST", "/api/admin/attempts", body);
+    const today = await post({ email: "sub-c@example.com", examId: "ex", deadline: "2026-11-28" });
+    expect(today.status).toBe(400);
+    expect(((await today.json()) as { error: { message: string } }).error.message).toContain(
+      "翌日以降",
+    );
+    expect(
+      (await post({ email: "sub-g@example.com", examId: "ex", deadline: "2026-12-10" })).status,
+    ).toBe(400);
+    expect(
+      (await post({ email: "sub-c@example.com", examId: "ex", deadline: "12/10" })).status,
+    ).toBe(400);
+    expect(
+      (
+        await post({
+          email: "sub-c@example.com",
+          examId: "ex",
+          deadline: "2026-12-10",
+          force: true,
+        })
+      ).status,
+    ).toBe(400);
+    expect(ddbMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
+});
+
+describe("GET /api/admin/attempts/:attemptId", () => {
+  it("候補者のメールアドレス・採点基準・回答・割り当て・すべての採点者の採点を返す", async () => {
+    withAttempt({ ...ATT, status: "GRADING", submittedAt: "2026-11-03T00:00:00.000Z" }, [
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "ANS#q1",
+        qid: "q1",
+        content: { fileKey: "attempts/att-1/q1/a.zip", fileName: "a.zip" },
+        version: 1,
+        updatedAt: "u1",
+      },
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "ASSIGN#sub-g",
+        graderSub: "sub-g",
+        graderName: "氏名-sub-g",
+        assignedAt: "a1",
+        status: "DONE",
+        finalizedAt: "f1",
+      },
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "ASSIGN#sub-t",
+        graderSub: "sub-t",
+        graderName: "氏名-sub-t",
+        assignedAt: "a2",
+        status: "DRAFT",
+      },
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "GRADE#sub-g",
+        graderSub: "sub-g",
+        items: { q1: { score: 3, comment: "c" } },
+        overallComment: "総評",
+        version: 2,
+        updatedAt: "g1",
+        finalizedAt: "f1",
+      },
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "GRADE#sub-t",
+        graderSub: "sub-t",
+        items: {},
+        overallComment: "",
+        version: 1,
+        updatedAt: "g2",
+      },
+    ]);
+    const res = await admin("GET", "/api/admin/attempts/att-1");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      attempt: { attemptId: "att-1", status: "GRADING" },
+      candidateEmail: "sub-c@example.com",
+      intro: "説明",
+      questions: [{ qid: "q1", rubric: "基準" }],
+      answers: { q1: { updatedAt: "u1" } },
+    });
+    expect((body.assignments as unknown[]).length).toBe(2);
+    expect(body.grades).toEqual([
+      {
+        graderSub: "sub-g",
+        items: { q1: { score: 3, comment: "c" } },
+        overallComment: "総評",
+        updatedAt: "g1",
+        finalizedAt: "f1",
+      },
+      { graderSub: "sub-t", items: {}, overallComment: "", updatedAt: "g2" },
+    ]);
+  });
+
+  it("存在しない受験は 404", async () => {
+    withAttempt();
+    expect((await admin("GET", "/api/admin/attempts/nope")).status).toBe(404);
+  });
+});
+
+describe("POST /api/admin/attempts/:attemptId/extend・cancel", () => {
+  it("期限を変更し、管理者の操作として記録する", async () => {
+    withAttempt({ ...ATT, status: "EXPIRED", GSI2PK: "STATUS#EXPIRED" });
+    const res = await admin("POST", "/api/admin/attempts/att-1/extend", { deadline: "2026-12-20" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      status: "IN_PROGRESS",
+      deadlineAt: "2026-12-20T14:59:59.999Z",
+    });
+    expect(auditInTransaction()[0]).toMatchObject({
+      action: "attempt.extend",
+      actor: { type: "admin", sub: "sub-a" },
+    });
+    expect(
+      (await admin("POST", "/api/admin/attempts/att-1/extend", { deadline: "2026-11-28" })).status,
+    ).toBe(400);
+  });
+
+  it("取り消し、管理者の操作として記録する。提出済みは 409", async () => {
+    withAttempt();
+    const res = await admin("POST", "/api/admin/attempts/att-1/cancel");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "CANCELED" });
+    expect(auditInTransaction()[0]).toMatchObject({
+      action: "attempt.cancel",
+      actor: { type: "admin", sub: "sub-a" },
+    });
+
+    withAttempt({ ...ATT, status: "SUBMITTED" });
+    expect((await admin("POST", "/api/admin/attempts/att-1/cancel")).status).toBe(409);
+  });
+});
+
+describe("POST /api/admin/attempts/:attemptId/assign", () => {
+  it("採点者を割り当て、管理者の操作として記録する。割り当て済みは skipped", async () => {
+    withAttempt({ ...ATT, status: "SUBMITTED" }, [
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "ASSIGN#sub-t",
+        graderSub: "sub-t",
+        graderName: "氏名-sub-t",
+        assignedAt: "a",
+        status: "ASSIGNED",
+      },
+    ]);
+    const res = await admin("POST", "/api/admin/attempts/att-1/assign", {
+      graderEmails: ["sub-g@example.com", "sub-t@example.com"],
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      assigned: [{ sub: "sub-g", name: "氏名-sub-g" }],
+      skipped: [{ sub: "sub-t", name: "氏名-sub-t" }],
+    });
+    expect(auditInTransaction()).toEqual([
+      expect.objectContaining({
+        action: "attempt.assign",
+        actor: expect.objectContaining({ type: "admin" }),
+      }),
+    ]);
+  });
+
+  it("採点者でない人・空の指定は 400、期限切れの受験は 409", async () => {
+    withAttempt({ ...ATT, status: "SUBMITTED" });
+    const assign = (body: unknown) => admin("POST", "/api/admin/attempts/att-1/assign", body);
+    expect((await assign({ graderEmails: ["sub-c@example.com"] })).status).toBe(400);
+    expect((await assign({ graderEmails: [] })).status).toBe(400);
+    withAttempt({ ...ATT, status: "EXPIRED" });
+    expect((await assign({ graderEmails: ["sub-g@example.com"] })).status).toBe(409);
+    expect(ddbMock.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
+});
+
+describe("POST /api/admin/attempts/:attemptId/answers/:qid/download-url", () => {
+  it("提出ファイルの署名付き URL を返す（割り当てがなくても管理者は読める）", async () => {
+    withAttempt({ ...ATT, status: "SUBMITTED" }, [
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "ANS#q1",
+        qid: "q1",
+        content: { fileKey: "attempts/att-1/q1/a.zip", fileName: "a.zip" },
+        version: 1,
+        updatedAt: "u",
+      },
+    ]);
+    const res = await admin("POST", "/api/admin/attempts/att-1/answers/q1/download-url");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ url: "https://s3.example/attempts/att-1/q1/a.zip" });
+    expect((await admin("POST", "/api/admin/attempts/att-1/answers/q9/download-url")).status).toBe(
+      404,
+    );
   });
 });

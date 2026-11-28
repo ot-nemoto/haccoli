@@ -84,13 +84,15 @@ export class Api extends Construct {
         TABLE_NAME: props.table.tableName,
         AUDIT_TABLE_NAME: props.auditTable.tableName,
         USER_POOL_ID: props.userPool.userPoolId,
+        SUBMISSIONS_BUCKET: props.submissionsBucketName,
       },
       memorySize: 512,
       timeout: Duration.seconds(25),
     });
     // 業務データ: 利用者の一覧（Scan）・登録（PutItem）・ロールと無効化の更新（UpdateItem）、
-    // 最後の管理者の確認（ConditionCheckItem。トランザクション）、メールアドレスでの検索（GSI1）。
-    // 状態ごとの受験の一覧（GSI2）は Step 8 で追加する。DeleteItem は与えない
+    // 最後の管理者の確認（ConditionCheckItem。トランザクション）、メールアドレスでの検索（GSI1）、
+    // 状態ごとの受験の一覧・ダッシュボード（GSI2）。受験の発行・期限の変更・取消・割り当ても
+    // PutItem・UpdateItem（トランザクション）で行う。DeleteItem は与えない
     this.adminHandler.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
@@ -101,7 +103,20 @@ export class Api extends Construct {
           "dynamodb:UpdateItem",
           "dynamodb:ConditionCheckItem",
         ],
-        resources: [props.table.tableArn, `${props.table.tableArn}/index/GSI1`],
+        resources: [
+          props.table.tableArn,
+          `${props.table.tableArn}/index/GSI1`,
+          `${props.table.tableArn}/index/GSI2`,
+        ],
+      }),
+    );
+    // 提出ファイル: ダウンロード用の署名付き URL の発行（GetObject）のみ。アップロード・削除はさせない
+    this.adminHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["s3:GetObject"],
+        resources: [
+          `arn:${Stack.of(this).partition}:s3:::${props.submissionsBucketName}/attempts/*`,
+        ],
       }),
     );
     // 監査ログ: 記録（PutItem・UpdateItem）と一覧（Query）のみ。削除させない（§14.4）

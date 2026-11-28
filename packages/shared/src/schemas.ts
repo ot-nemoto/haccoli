@@ -174,3 +174,19 @@ export const adminSetRolesRequestSchema = z
       .max(2),
   })
   .strict();
+
+const deadlineDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+export const adminIssueAttemptRequestSchema = z
+  .object({
+    email: z.string().trim().min(3).max(254),
+    examId: z.string().min(1).max(100),
+    deadline: deadlineDate,
+  })
+  .strict();
+
+export const adminExtendAttemptRequestSchema = z.object({ deadline: deadlineDate }).strict();
+
+export const adminAssignRequestSchema = z
+  .object({ graderEmails: z.array(z.string().trim().min(3).max(254)).min(1).max(20) })
+  .strict();
