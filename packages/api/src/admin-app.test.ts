@@ -64,6 +64,9 @@ const ADMIN_ROUTES = [
   { method: "POST", path: "/api/admin/attempts/:attemptId/assign" },
   { method: "POST", path: "/api/admin/attempts/:attemptId/answers/:qid/download-url" },
   { method: "GET", path: "/api/admin/exams/:examId/results.csv" },
+  { method: "GET", path: "/api/admin/exams/:examId" },
+  { method: "PUT", path: "/api/admin/exams/:examId/draft" },
+  { method: "POST", path: "/api/admin/exams/:examId/publish" },
 ] as const;
 
 const concrete = (path: string) =>
@@ -487,16 +490,20 @@ const auditInTransaction = () =>
     .map((p) => p?.Item);
 
 describe("GET /api/admin/exams", () => {
-  it("課題の一覧を返す", async () => {
+  it("課題の一覧を返す（未公開の課題と、下書きの有無を含む）", async () => {
     ddbMock.on(ScanCommand).resolves({
       Items: [
+        { type: "Exam", examId: "ex", title: "課題", latestVersion: 2, updatedAt: "u" },
+        // 管理画面で作成し、まだ公開していない課題と、その下書き
+        { type: "Exam", examId: "new", title: "新しい課題", updatedAt: "u2" },
         {
-          PK: "EXAM#ex",
-          SK: "META",
-          examId: "ex",
-          title: "課題",
-          latestVersion: 2,
-          updatedAt: "u",
+          type: "ExamDraft",
+          examId: "new",
+          version: 3,
+          baseVersion: 0,
+          updatedAt: "u3",
+          updatedBy: { sub: "sub-a", name: "氏名-sub-a" },
+          definition: { title: "下書きの題名" },
         },
       ],
     });
@@ -504,7 +511,166 @@ describe("GET /api/admin/exams", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([
       { examId: "ex", title: "課題", latestVersion: 2, updatedAt: "u" },
+      {
+        examId: "new",
+        title: "新しい課題",
+        updatedAt: "u2",
+        draft: {
+          version: 3,
+          title: "下書きの題名",
+          baseVersion: 0,
+          updatedAt: "u3",
+          updatedBy: { sub: "sub-a", name: "氏名-sub-a" },
+        },
+      },
     ]);
+    // 下書きの本文は読まない
+    expect(ddbMock.commandCalls(ScanCommand)[0]?.args[0].input.ProjectionExpression).not.toMatch(
+      /questions|intro/,
+    );
+  });
+});
+
+describe("課題の下書き・公開", () => {
+  const draft = {
+    examId: "new-exam",
+    title: "新しい課題",
+    intro: "",
+    questions: [{ qid: "q1", type: "text", body: "" }],
+  };
+
+  /** 利用者（認可に使う）はそのまま返し、課題のアイテムは meta だけ返す */
+  const examMeta = (meta?: Record<string, unknown>) =>
+    ddbMock.on(GetCommand).callsFake((i) => {
+      const pk = String(i.Key.PK);
+      if (pk.startsWith("USER#")) return { Item: users.get(pk.replace("USER#", "")) };
+      return { Item: i.Key.SK === "META" ? meta : undefined };
+    });
+
+  it("新しい課題を下書きとして作る（201）。直すべき点を返し、保存した管理者を記録する", async () => {
+    examMeta(undefined);
+    const res = await admin("PUT", "/api/admin/exams/new-exam/draft", {
+      definition: draft,
+      version: 0,
+      baseVersion: 0,
+      create: true,
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      draft: Record<string, unknown>;
+      problems: string[];
+    };
+    expect(body.draft).toMatchObject({
+      version: 1,
+      baseVersion: 0,
+      title: "新しい課題",
+      updatedBy: { sub: "sub-a", name: "氏名-sub-a" },
+    });
+    expect(body.problems).toEqual([expect.stringMatching(/^問 1の本文/)]);
+    const items = ddbMock.commandCalls(TransactWriteCommand)[0]?.args[0].input.TransactItems;
+    expect(
+      items?.map((t) => (t.Put?.TableName === "audit" ? t.Put.Item?.action : t.Put?.Item?.SK)),
+    ).toEqual(["META", "DRAFT", "exam.save"]);
+  });
+
+  it("既にある課題 ID・古い版での保存は 409、課題 ID の変更・不正な本文は 400", async () => {
+    examMeta({ examId: "new-exam", latestVersion: 1 });
+    const put = (body: unknown) => admin("PUT", "/api/admin/exams/new-exam/draft", body);
+    expect(
+      (await put({ definition: draft, version: 0, baseVersion: 0, create: true })).status,
+    ).toBe(409);
+    ddbMock.on(TransactWriteCommand).rejects(
+      Object.assign(new Error("x"), {
+        name: "TransactionCanceledException",
+        CancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }],
+      }),
+    );
+    const stale = await put({ definition: draft, version: 2, baseVersion: 1 });
+    expect(stale.status).toBe(409);
+    expect(((await stale.json()) as { error: { code: string } }).error.code).toBe(
+      "VERSION_CONFLICT",
+    );
+    expect(
+      (await put({ definition: { ...draft, examId: "other" }, version: 1, baseVersion: 1 })).status,
+    ).toBe(400);
+    expect((await put({ definition: draft, version: -1, baseVersion: 0 })).status).toBe(400);
+    expect(
+      (await put({ definition: { ...draft, extra: 1 }, version: 1, baseVersion: 0 })).status,
+    ).toBe(400);
+  });
+
+  it("下書きを公開する。検証を通らなければ 400、元にした版が古ければ 409", async () => {
+    const valid = { ...draft, questions: [{ qid: "q1", type: "text", body: "問題文" }] };
+    const items: Record<string, Record<string, unknown>> = {
+      META: { examId: "new-exam", title: "新しい課題", updatedAt: "u" },
+      DRAFT: {
+        examId: "new-exam",
+        definition: valid,
+        version: 2,
+        baseVersion: 0,
+        updatedAt: "u",
+        updatedBy: { sub: "sub-a", name: "n" },
+      },
+    };
+    ddbMock.on(GetCommand).callsFake((i) => {
+      const pk = String(i.Key.PK);
+      if (pk.startsWith("USER#")) return { Item: users.get(pk.replace("USER#", "")) };
+      return { Item: items[String(i.Key.SK)] };
+    });
+    const publish = (version: number) =>
+      admin("POST", "/api/admin/exams/new-exam/publish", { version });
+    const ok = await publish(2);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ kind: "published", version: 1 });
+    const audit = auditInTransaction().find((a) => a?.action === "exam.publish");
+    expect(audit).toMatchObject({ actor: { type: "admin", sub: "sub-a" } });
+
+    expect((await publish(1)).status).toBe(409);
+    items.DRAFT = { ...items.DRAFT, definition: draft } as Record<string, unknown>;
+    expect((await publish(2)).status).toBe(400);
+    items.DRAFT = { ...items.DRAFT, definition: valid } as Record<string, unknown>;
+    items.META = { ...items.META, latestVersion: 1 } as Record<string, unknown>;
+    expect((await publish(2)).status).toBe(409);
+    expect((await admin("POST", "/api/admin/exams/new-exam/publish", {})).status).toBe(400);
+  });
+
+  it("課題の詳細（最新版・下書き・版の履歴）。存在しない課題は 404", async () => {
+    ddbMock.on(GetCommand).callsFake((i) => {
+      const pk = String(i.Key.PK);
+      if (pk.startsWith("USER#")) return { Item: users.get(pk.replace("USER#", "")) };
+      if (i.Key.SK === "V#000001") {
+        return {
+          Item: {
+            definition: {
+              examId: "ex-detail",
+              title: "課題",
+              intro: "",
+              questions: [{ qid: "q1", type: "text", body: "b", maxLength: 10 }],
+            },
+          },
+        };
+      }
+      return {};
+    });
+    ddbMock.on(QueryCommand, { TableName: "table", KeyConditionExpression: "PK = :pk" }).resolves({
+      Items: [
+        { SK: "META", examId: "ex-detail", title: "課題", latestVersion: 1, updatedAt: "u" },
+        { SK: "V#000001", version: 1, publishedAt: "p1", definition: { title: "旧い題名" } },
+      ],
+    });
+    const res = await admin("GET", "/api/admin/exams/ex-detail");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.draft).toBeUndefined();
+    expect(body).toMatchObject({
+      exam: { examId: "ex-detail", latestVersion: 1 },
+      latest: { questions: [{ qid: "q1" }] },
+      versions: [{ version: 1, title: "旧い題名", publishedAt: "p1" }],
+    });
+    ddbMock.on(QueryCommand, { TableName: "table", KeyConditionExpression: "PK = :pk" }).resolves({
+      Items: [],
+    });
+    expect((await admin("GET", "/api/admin/exams/nope")).status).toBe(404);
   });
 });
 
