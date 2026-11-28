@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { Context } from "@haccoli/admin-cli/context";
-import { jstDate, type UserProfile } from "@haccoli/core";
+import { auditMonth, jstDate, listAuditLogPage, type UserProfile } from "@haccoli/core";
 import { expect, test } from "@playwright/test";
 import {
   EXAM_ID,
@@ -158,6 +158,19 @@ test.describe
       await expect(page.getByRole("region", { name: "受験の操作" })).toHaveCount(0);
     });
 
+    /** 今月の、e2e-admin による EXAM_ID の採点結果の出力の記録 */
+    const exportRecords = async () => {
+      const page = await listAuditLogPage(ctx.deps, {
+        month: auditMonth(new Date()),
+        action: "result.export",
+        limit: 100,
+      });
+      return page.items.filter(
+        (r) =>
+          r.actor.type === "admin" && r.actor.sub === f.admin.user.sub && r.target?.id === EXAM_ID,
+      );
+    };
+
     test("管理者が採点結果の CSV を出力し、監査ログに残る", async ({ browser }, testInfo) => {
       await using s = await openPage(browser, f.webUrl, f.admin.session, "/admin/results");
       const page = s.page;
@@ -165,6 +178,8 @@ test.describe
       const form = page.getByRole("form", { name: "採点結果の出力" });
       await form.getByRole("combobox", { name: "課題" }).selectOption(EXAM_ID);
       await page.screenshot({ path: testInfo.outputPath("results.png"), fullPage: true });
+      // 前回までの実行の記録と区別するため、出力の前後で記録を比べる（時計のずれに左右されない）
+      const before = new Set((await exportRecords()).map((r) => r.id));
       const [download] = await Promise.all([
         page.waitForEvent("download", { timeout: 15_000 }),
         form.getByRole("button", { name: "CSV を出力" }).click(),
@@ -178,6 +193,11 @@ test.describe
       const row = csv.split("\r\n").find((l) => l.startsWith(`${attemptId},`));
       expect(row).toContain(`${candidate.name},${candidateEmail},CANCELED（取消）`);
       await expect(page.getByRole("status")).toContainText(`results-${EXAM_ID}.csv を出力しました`);
+
+      // 今回の出力が監査ログに 1 件だけ記録された
+      const mine = (await exportRecords()).filter((r) => !before.has(r.id));
+      expect(mine).toHaveLength(1);
+      expect(JSON.stringify(mine[0])).not.toContain(candidateEmail);
 
       // 監査ログ：対象は課題 ID、実行者は管理者（個人情報は記録しない）
       await page.getByRole("link", { name: "監査ログ" }).click();
