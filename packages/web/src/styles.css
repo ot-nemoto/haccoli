@@ -468,3 +468,52 @@ fieldset.inline-form {
 table.list tr.row-panel > td {
   background: #f6f8fa;
 }
+
+/* 受験の管理画面（Step 8-2） */
+ul.status-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0;
+  margin: 1rem 0 1.5rem;
+  list-style: none;
+}
+ul.status-counts a {
+  display: flex;
+  flex-direction: column;
+  min-width: 7.5rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+ul.status-counts a:hover {
+  border-color: #0969da;
+}
+ul.status-counts .count {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+dl.attempt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 2rem;
+  margin-bottom: 1rem;
+}
+dl.attempt-meta dd {
+  word-break: break-all;
+}
+.panel.wide-panel {
+  max-width: none;
+  display: grid;
+  gap: 1rem;
+}
+.panel.wide-panel legend {
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+.grade-input .comment {
+  white-space: pre-wrap;
+}
