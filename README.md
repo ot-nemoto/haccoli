@@ -29,7 +29,7 @@ npm run lint        # Biome
 
 ### E2E テスト（dev 環境）
 
-デプロイ済みの dev 環境に対して、受験の発行 → 候補者の回答・提出 → 採点者の割り当て → 採点・確定までを Playwright で確かめる。
+デプロイ済みの dev 環境に対して、受験の発行 → 候補者の回答・提出 → 採点者の割り当て → 採点・確定までと、管理画面（利用者・監査ログ）を Playwright で確かめる。
 
 ```bash
 npx -w @haccoli/e2e playwright install chromium   # 初回のみ
@@ -43,6 +43,7 @@ HACCOLI_E2E_BASE_URL=http://localhost:5173 npm run e2e
 - ログインはメール OTP のため自動化できない。テスト用ユーザーに限り、実行ごとに生成したパスワードで Cognito のトークンを取り、画面の sessionStorage に入れて開く。**OTP を入力するログイン画面はテストの対象外**
 - テスト用の候補者（`e2e-cand-…@example.com`）は実行ごとに作り、終了時に `user:purge` と同じ処理で削除する（途中で失敗しても、取消・採点の確定をしてから削除する）
 - 採点者 `e2e-grader@example.com` は削除できないため使い回す。終了時にパスワードを再びランダムな値に戻し、リフレッシュトークンを失効させる（アクセストークンは発行から 60 分まで有効）
+- 管理画面のテストは、dev に常設の管理者 `e2e-admin@example.com` を使う（なければ `npm run admin -- -e dev admin:add --email e2e-admin@example.com --name "E2E 管理者"` で登録する）。e2e-grader への管理者のロールの付与と削除を画面から行い、終了時に e2e-grader を採点者だけに戻す。パスワードの扱いは e2e-grader と同じ
 - 課題 `exams/sample-2026` を投入する（内容が同じなら何もしない）
 - 通常の CI（`npm test`）には含めない。失敗時のスクリーンショットとトレースは `packages/e2e/test-results/` に出る。トレースにはトークンを含む通信が残るため、共有しない（確認後に削除する）
 
