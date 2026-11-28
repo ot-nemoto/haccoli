@@ -23,6 +23,8 @@ export type ApiErrorCode =
   /** 受験の状態（提出済み・期限切れ・未開始など）により操作できない */
   | "INVALID_STATE"
   | "VALIDATION"
+  /** 応答が大きすぎて返せない（Lambda の応答の上限）。CLI で行う */
+  | "TOO_LARGE"
   | "INTERNAL";
 
 /** エラー時のレスポンス本文 */

@@ -4,6 +4,7 @@ import {
   assignGraders,
   auditMonth,
   cancelAttempt,
+  collectResults,
   createAdminDownloadUrl,
   DUE_SOON_DAYS,
   disableUser,
@@ -17,6 +18,7 @@ import {
   listExams,
   listUserPage,
   registerUser,
+  resultsCsv,
   setStaffRoles,
   summarizeAttempts,
   type UserProfile,
@@ -45,14 +47,14 @@ import {
 import { type Context, Hono } from "hono";
 import type { AppEnv } from "./auth.js";
 import type { AdminApiDeps } from "./deps.js";
-import { invalidRequest } from "./errors.js";
+import { ApiError, invalidRequest } from "./errors.js";
 
 /**
  * 管理者 API（docs/design.md §14.6）。/api/admin/* に requireRole("admin") 済みでマウントする。
  * 業務ルール（最後の管理者の保護・ロールの組み合わせなど）と監査ログの記録は core で行う。
  * 実行者は認可済みの管理者（sub・氏名）として core に渡す。
  *
- * 利用者と監査ログは Step 7-3、受験は Step 8-2。採点結果・課題の API は Step 8-3・9 で追加する。
+ * 利用者と監査ログは Step 7-3、受験は Step 8-2、採点結果は Step 8-3。課題の API は Step 9 で追加する。
  */
 export function adminRoutes(deps: AdminApiDeps) {
   const app = new Hono<AppEnv>();
@@ -240,8 +242,37 @@ export function adminRoutes(deps: AdminApiDeps) {
     return c.json<DownloadUrlResponse>({ url });
   });
 
+  // ---- 採点結果（Step 8-3） ----
+
+  /**
+   * 採点結果の CSV（CLI の result:export と同じ形式）。候補者・採点者の個人情報を含むため、
+   * 渡す前に監査ログに管理者として記録する（core の collectResults。記録できなければ返さない）
+   */
+  app.get("/exams/:examId/results.csv", async (c) => {
+    const examId = c.req.param("examId");
+    const { questions, rows } = await collectResults(as(c), examId);
+    const csv = resultsCsv(questions, rows);
+    if (Buffer.byteLength(csv) > MAX_CSV_BYTES) {
+      throw new ApiError(
+        413,
+        "TOO_LARGE",
+        "採点結果が大きすぎるため、画面から出力できません。CLI の result:export で出力してください",
+      );
+    }
+    return c.body(csv, 200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="results-${examId.replace(/[^\w-]/g, "_")}.csv"`,
+    });
+  });
+
   return app;
 }
+
+/**
+ * 画面から出力できる CSV の上限。Lambda の応答（HTTP API）は 6 MB までのため、余裕を持たせる。
+ * 超える場合は CLI で出力する
+ */
+const MAX_CSV_BYTES = 5 * 1024 * 1024;
 
 function limitOf(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;

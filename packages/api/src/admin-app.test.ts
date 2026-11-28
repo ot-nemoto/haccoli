@@ -62,10 +62,15 @@ const ADMIN_ROUTES = [
   { method: "POST", path: "/api/admin/attempts/:attemptId/cancel" },
   { method: "POST", path: "/api/admin/attempts/:attemptId/assign" },
   { method: "POST", path: "/api/admin/attempts/:attemptId/answers/:qid/download-url" },
+  { method: "GET", path: "/api/admin/exams/:examId/results.csv" },
 ] as const;
 
 const concrete = (path: string) =>
-  path.replace(":sub", "sub-t").replace(":attemptId", "att-1").replace(":qid", "q1");
+  path
+    .replace(":sub", "sub-t")
+    .replace(":attemptId", "att-1")
+    .replace(":qid", "q1")
+    .replace(":examId", "ex");
 
 const profile = (sub: string, roles: string[], extra: Record<string, unknown> = {}) => ({
   PK: `USER#${sub}`,
@@ -761,5 +766,37 @@ describe("POST /api/admin/attempts/:attemptId/answers/:qid/download-url", () => 
     expect((await admin("POST", "/api/admin/attempts/att-1/answers/q9/download-url")).status).toBe(
       404,
     );
+  });
+});
+
+describe("GET /api/admin/exams/:examId/results.csv", () => {
+  it("CSV を返し、管理者の操作として出力を記録する", async () => {
+    withAttempt({ ...ATT, status: "SUBMITTED", submittedAt: "2026-11-03T00:00:00.000Z" });
+    ddbMock.on(ScanCommand).resolves({ Items: [ATT] });
+    const res = await admin("GET", "/api/admin/exams/ex/results.csv");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/csv; charset=utf-8");
+    expect(res.headers.get("Content-Disposition")).toBe('attachment; filename="results-ex.csv"');
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+    // text() は BOM を取り除くため、バイト列で確かめる（Excel で文字化けしないよう BOM を付ける）
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const csv = bytes.toString("utf8");
+    expect(csv.startsWith("\uFEFFattemptId,examVersion,candidateName,candidateEmail,")).toBe(true);
+    expect(csv).toContain("att-1,2,氏名-sub-c,sub-c@example.com,SUBMITTED（提出済み）");
+    const audit = auditPuts()[0]?.Item;
+    expect(audit).toMatchObject({
+      action: "result.export",
+      target: { type: "exam", id: "ex" },
+      actor: { type: "admin", sub: "sub-a" },
+    });
+    // 監査ログには個人情報を入れない
+    expect(JSON.stringify(audit)).not.toMatch(/example\.com|氏名-sub-c/);
+  });
+
+  it("存在しない課題は 404（出力を記録しない）", async () => {
+    withAttempt();
+    expect((await admin("GET", "/api/admin/exams/nope/results.csv")).status).toBe(404);
+    expect(auditPuts()).toHaveLength(0);
   });
 });
