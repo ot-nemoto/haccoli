@@ -15,7 +15,7 @@ export function useApi() {
   const location = useLocation();
 
   return useCallback(
-    async <T>(path: string, init?: RequestInit): Promise<T> => {
+    async <T>(path: string, init?: RequestInit, read?: "json" | "blob"): Promise<T> => {
       const toLogin = async () => {
         const login = session ? ROLE_ROUTES[session.role].login : "/login";
         await signOut();
@@ -29,7 +29,7 @@ export function useApi() {
         throw new ApiError(401, "UNAUTHORIZED", "ログインの有効期限が切れました");
       }
       try {
-        return await apiFetch<T>(session.tokens.accessToken, path, init);
+        return await apiFetch<T>(session.tokens.accessToken, path, init, read);
       } catch (e) {
         if (e instanceof ApiError && e.status === 401) await toLogin();
         throw e;

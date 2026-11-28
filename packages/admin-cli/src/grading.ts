@@ -1,12 +1,9 @@
 import { closeSync, fchmodSync, openSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
-import { assignGraders, collectResults } from "@haccoli/core";
-import { ASSIGNMENT_STATUS_LABELS } from "@haccoli/shared";
+import { assignGraders, exportResultsCsv } from "@haccoli/core";
 import type { Command } from "commander";
 import { confirmIfProd } from "./confirm.js";
 import { createContext } from "./context.js";
-import { toCsv } from "./csv.js";
-import { ADMIN_STATUS_LABELS } from "./labels.js";
 
 type Globals = () => { env: string; yes: boolean };
 
@@ -44,51 +41,10 @@ export function addGradingCommands(program: Command, globals: Globals) {
     .option("--out <file>", "出力先", "results.csv")
     .action(async (opts: { exam: string; out: string }) => {
       const ctx = await createContext(globals().env);
-      const { questions, rows } = await collectResults(ctx.deps, opts.exam);
-      const header = [
-        "attemptId",
-        "examVersion",
-        "candidateName",
-        "candidateEmail",
-        "attemptStatus",
-        "submittedAt",
-        "graderName",
-        "graderEmail",
-        "gradeStatus",
-        "finalizedAt",
-        "totalScore",
-        ...questions.flatMap((q) => [
-          `${q.qid}_score${q.points !== undefined ? `(/${q.points})` : ""}`,
-          `${q.qid}_comment`,
-        ]),
-        "overallComment",
-      ];
-      const body = rows.map((r) => {
-        const items = r.grade?.items ?? {};
-        const scores = Object.values(items)
-          .map((i) => i.score)
-          .filter((s): s is number => s !== undefined);
-        return [
-          r.attempt.attemptId,
-          r.attempt.examVersion,
-          r.attempt.candidateName,
-          r.candidateEmail,
-          `${r.attempt.status}（${ADMIN_STATUS_LABELS[r.attempt.status]}）`,
-          r.attempt.submittedAt,
-          r.assignment?.graderName,
-          r.graderEmail,
-          r.assignment
-            ? `${r.assignment.status}（${ASSIGNMENT_STATUS_LABELS[r.assignment.status]}）`
-            : undefined,
-          r.assignment?.finalizedAt,
-          scores.length > 0 ? scores.reduce((a, b) => a + b, 0) : undefined,
-          ...questions.flatMap((q) => [items[q.qid]?.score, items[q.qid]?.comment]),
-          r.grade?.overallComment || undefined,
-        ];
-      });
+      const { csv, rows } = await exportResultsCsv(ctx.deps, opts.exam);
       const out = fromInvocationDir(opts.out);
-      writePrivateFile(out, toCsv([header, ...body]));
-      console.log(`出力しました: ${out}（${rows.length} 行）`);
+      writePrivateFile(out, csv);
+      console.log(`出力しました: ${out}（${rows} 行）`);
       console.log("候補者の個人情報を含みます。取り扱いに注意し、不要になったら削除してください。");
     });
 }

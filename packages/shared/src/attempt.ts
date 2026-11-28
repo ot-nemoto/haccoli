@@ -39,6 +39,16 @@ export const ATTEMPT_STATUS_LABELS: Record<AttemptStatus, string> = {
   CANCELED: "取消",
 };
 
+/**
+ * 管理画面・CLI の状態の表示名。候補者向け（ATTEMPT_STATUS_LABELS）では採点中・採点完了も
+ * 「提出済み」になるため、提出後の採点の進み具合を区別する
+ */
+export const ADMIN_ATTEMPT_STATUS_LABELS: Record<AttemptStatus, string> = {
+  ...ATTEMPT_STATUS_LABELS,
+  GRADING: "採点中",
+  GRADED: "採点完了",
+};
+
 /** PUT .../answers/{qid} のレスポンス。ファイルはサーバーが求めたサイズ・SHA-256 を含む */
 export interface SaveAnswerResponse {
   content: AnswerContent;

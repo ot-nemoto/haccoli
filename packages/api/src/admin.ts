@@ -7,6 +7,7 @@ import {
   createAdminDownloadUrl,
   DUE_SOON_DAYS,
   disableUser,
+  exportResultsCsv,
   extendAttempt,
   getAdminAttemptView,
   isAuditAction,
@@ -52,7 +53,7 @@ import { invalidRequest } from "./errors.js";
  * 業務ルール（最後の管理者の保護・ロールの組み合わせなど）と監査ログの記録は core で行う。
  * 実行者は認可済みの管理者（sub・氏名）として core に渡す。
  *
- * 利用者と監査ログは Step 7-3、受験は Step 8-2。採点結果・課題の API は Step 8-3・9 で追加する。
+ * 利用者と監査ログは Step 7-3、受験は Step 8-2、採点結果は Step 8-3。課題の API は Step 9 で追加する。
  */
 export function adminRoutes(deps: AdminApiDeps) {
   const app = new Hono<AppEnv>();
@@ -240,8 +241,37 @@ export function adminRoutes(deps: AdminApiDeps) {
     return c.json<DownloadUrlResponse>({ url });
   });
 
+  // ---- 採点結果（Step 8-3） ----
+
+  /**
+   * 採点結果の CSV（CLI の result:export と同じ形式）。候補者・採点者の個人情報を含むため、
+   * 渡す直前に監査ログに管理者として記録する（core の exportResultsCsv。記録できなければ返さない）。
+   * Lambda の時間・応答の大きさの上限があるため、上限を超える課題は 413 にして CLI を案内する
+   * （上限を超えて返さなかった場合は記録しない）
+   */
+  app.get("/exams/:examId/results.csv", async (c) => {
+    const examId = c.req.param("examId");
+    const { csv } = await exportResultsCsv(as(c), examId, {
+      maxAttempts: MAX_CSV_ATTEMPTS,
+      maxBytes: MAX_CSV_BYTES,
+      // 応答は JSON にして Lambda から返すため、改行・引用符のエスケープを含めた大きさで測る
+      measure: (x) => Buffer.byteLength(JSON.stringify(x)),
+    });
+    return c.body(csv, 200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="results-${examId.replace(/[^\w-]/g, "_")}.csv"`,
+    });
+  });
+
   return app;
 }
+
+/**
+ * 画面から出力できる CSV の上限。Lambda の応答（HTTP API）は JSON にした大きさで 6 MB までのため、
+ * 余裕を持たせる。受験数の上限は、Lambda の時間の上限（25 秒）に収めるため。超える場合は CLI で出力する
+ */
+const MAX_CSV_BYTES = 5 * 1024 * 1024;
+const MAX_CSV_ATTEMPTS = 1000;
 
 function limitOf(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;

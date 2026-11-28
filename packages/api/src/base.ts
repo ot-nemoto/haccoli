@@ -1,5 +1,6 @@
 import {
   NotFoundError,
+  ResultsTooLargeError,
   StateError,
   UserAlreadyExistsError,
   ValidationError,
@@ -82,5 +83,6 @@ function toApiError(err: Error): ApiError | undefined {
   }
   if (err instanceof StateError) return new ApiError(409, "INVALID_STATE", err.message);
   if (err instanceof UserAlreadyExistsError) return new ApiError(409, "CONFLICT", err.message);
+  if (err instanceof ResultsTooLargeError) return new ApiError(413, "TOO_LARGE", err.message);
   return undefined;
 }

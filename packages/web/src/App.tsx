@@ -6,6 +6,7 @@ import { AdminAttemptPage } from "./pages/AdminAttemptPage.js";
 import { AdminAttemptsPage } from "./pages/AdminAttemptsPage.js";
 import { AdminAuditPage } from "./pages/AdminAuditPage.js";
 import { AdminDashboardPage } from "./pages/AdminDashboardPage.js";
+import { AdminResultsPage } from "./pages/AdminResultsPage.js";
 import { AdminUsersPage } from "./pages/AdminUsersPage.js";
 import { AttemptPage } from "./pages/AttemptPage.js";
 import { CandidateHomePage } from "./pages/CandidateHomePage.js";
@@ -83,6 +84,14 @@ export function App(props: { config: RuntimeConfig }) {
             element={
               <RequireRole userRole="admin">
                 <AdminAttemptPage />
+              </RequireRole>
+            }
+          />
+          <Route
+            path="/admin/results"
+            element={
+              <RequireRole userRole="admin">
+                <AdminResultsPage />
               </RequireRole>
             }
           />

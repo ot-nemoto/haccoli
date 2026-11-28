@@ -19,6 +19,8 @@ export async function apiFetch<T>(
   accessToken: string,
   path: string,
   init: RequestInit = {},
+  /** 応答の読み方。blob はファイル（CSV など）を受け取るとき（text() と違い BOM を残す） */
+  read: "json" | "blob" = "json",
 ): Promise<T> {
   let res: Response;
   try {
@@ -33,6 +35,7 @@ export async function apiFetch<T>(
   } catch {
     throw new ApiError(0, "NETWORK", "通信に失敗しました");
   }
+  if (res.ok && read === "blob") return (await res.blob()) as T;
   const body = (await res.json().catch(() => undefined)) as unknown;
   if (!res.ok) {
     const err = (body as Partial<ApiErrorBody> | undefined)?.error;
