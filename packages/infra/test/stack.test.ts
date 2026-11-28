@@ -173,6 +173,16 @@ describe("管理者 API（docs/design.md §14.3）", () => {
       "dynamodb:Query",
       "dynamodb:UpdateItem",
     ]);
+    // 状態ごとの受験の一覧（GSI2）と、メールアドレスでの検索（GSI1）
+    const data = statements.filter((s) =>
+      /"DataTable[0-9A-F]{8}"/.test(JSON.stringify(s.Resource)),
+    );
+    expect(JSON.stringify(data)).toContain("/index/GSI1");
+    expect(JSON.stringify(data)).toContain("/index/GSI2");
+    // 提出ファイル: ダウンロード用 URL の発行（GetObject）だけ。アップロード・削除はさせない
+    const s3 = statements.filter((s) => actionsOf([s]).some((a) => a.startsWith("s3:")));
+    expect(actionsOf(s3)).toEqual(["s3:GetObject"]);
+    expect(JSON.stringify(s3.map((s) => s.Resource))).toMatch(/\/attempts\/\*/);
     expect(on(/"AuthUserPool[0-9A-F]{8}"/)).toEqual([
       "cognito-idp:AdminAddUserToGroup",
       "cognito-idp:AdminCreateUser",
@@ -188,13 +198,14 @@ describe("管理者 API（docs/design.md §14.3）", () => {
     }
   });
 
-  it("管理者 API の Lambda に、テーブル名・監査ログのテーブル名・User Pool ID を渡す", () => {
+  it("管理者 API の Lambda に、テーブル名・監査ログのテーブル名・User Pool ID・提出ファイルのバケットを渡す", () => {
     template.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: Match.objectLike({
           TABLE_NAME: Match.anyValue(),
           AUDIT_TABLE_NAME: Match.anyValue(),
           USER_POOL_ID: Match.anyValue(),
+          SUBMISSIONS_BUCKET: Match.anyValue(),
         }),
       },
       Timeout: 25,
