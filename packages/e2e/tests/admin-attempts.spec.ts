@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type { Context } from "@haccoli/admin-cli/context";
 import { jstDate, type UserProfile } from "@haccoli/core";
 import { expect, test } from "@playwright/test";
@@ -155,6 +156,39 @@ test.describe
       await expect(page.locator("dl.attempt-meta")).toContainText("取消");
       // 取消の受験には、期限の変更・取消・割り当てを出さない
       await expect(page.getByRole("region", { name: "受験の操作" })).toHaveCount(0);
+    });
+
+    test("管理者が採点結果の CSV を出力し、監査ログに残る", async ({ browser }, testInfo) => {
+      await using s = await openPage(browser, f.webUrl, f.admin.session, "/admin/results");
+      const page = s.page;
+      await expect(page.getByText("氏名とメールアドレスを含みます")).toBeVisible();
+      const form = page.getByRole("form", { name: "採点結果の出力" });
+      await form.getByRole("combobox", { name: "課題" }).selectOption(EXAM_ID);
+      await page.screenshot({ path: testInfo.outputPath("results.png"), fullPage: true });
+      const [download] = await Promise.all([
+        page.waitForEvent("download", { timeout: 15_000 }),
+        form.getByRole("button", { name: "CSV を出力" }).click(),
+      ]);
+      expect(download.suggestedFilename()).toBe(`results-${EXAM_ID}.csv`);
+      // 個人情報を含むため、保存先はコンテキストを閉じると消える一時ファイルのまま読む（コピーしない）
+      const bytes = await readFile(await download.path());
+      expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+      const csv = bytes.toString("utf8");
+      expect(csv).toContain("attemptId,examVersion,candidateName,candidateEmail,");
+      const row = csv.split("\r\n").find((l) => l.startsWith(`${attemptId},`));
+      expect(row).toContain(`${candidate.name},${candidateEmail},CANCELED（取消）`);
+      await expect(page.getByRole("status")).toContainText(`results-${EXAM_ID}.csv を出力しました`);
+
+      // 監査ログ：対象は課題 ID、実行者は管理者（個人情報は記録しない）
+      await page.getByRole("link", { name: "監査ログ" }).click();
+      await page.getByRole("combobox", { name: "操作", exact: true }).selectOption("result.export");
+      const exported = page
+        .getByRole("row")
+        .filter({ hasText: `${f.admin.user.name}（管理者）` })
+        .first();
+      await expect(exported).toContainText("採点結果の出力");
+      await expect(exported).toContainText(`課題 ${EXAM_ID}`);
+      await expect(exported).not.toContainText(candidateEmail);
     });
 
     test("監査ログに、管理者による受験の操作が残る", async ({ browser }, testInfo) => {
