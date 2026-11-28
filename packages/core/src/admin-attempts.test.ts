@@ -80,9 +80,14 @@ function fakeGsi2(input: Record<string, unknown>) {
   }
   const chunk = matched.slice(0, 2);
   const filter = String(input.FilterExpression ?? "");
+  // DynamoDB は Query のフィルタに索引のキーを使えない（ValidationException）
+  if (/GSI2(PK|SK)/.test(filter))
+    throw new Error("Filter Expression can only contain non-primary key attributes");
   const items = chunk
     .filter((r) => !filter.includes("examId = :examId") || r.examId === values[":examId"])
-    .filter((r) => !filter.includes("GSI2SK <= :until") || r.GSI2SK <= String(values[":until"]))
+    .filter(
+      (r) => !filter.includes("deadlineAt <= :until") || r.deadlineAt <= String(values[":until"]),
+    )
     .filter(
       (r) =>
         !filter.includes("assignmentCount") ||
@@ -122,7 +127,17 @@ beforeEach(() => {
     attempt("ca-1", "CANCELED", day(3)),
   ];
   ddbMock.on(QueryCommand).callsFake(fakeGsi2);
+  // 割り当てのアイテム（割り当て数を持たない既存データの確認に使う）
+  ddbMock
+    .on(QueryCommand, { KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)" })
+    .callsFake((i) => ({
+      Count: assignments.has(String(i.ExpressionAttributeValues[":pk"])) ? 1 : 0,
+    }));
+  assignments = new Set();
 });
+
+/** 割り当てのアイテムがある受験（PK） */
+let assignments: Set<string>;
 
 async function readAll(opts: Parameters<typeof listAttemptPage>[1]) {
   const ids: string[][] = [];
@@ -233,6 +248,20 @@ describe("summarizeAttempts", () => {
     // 割り当て数がない（または 0）の提出済み。提出が古い順
     expect(s.unassigned.map((a) => a.attemptId)).toEqual(["sub-3", "sub-1"]);
     expect(s.unassignedTotal).toBe(2);
+  });
+
+  it("割り当て数を持たない既存データでも、割り当て済みなら未割り当てに入れない", async () => {
+    assignments.add("ATTEMPT#sub-1");
+    const s = await summarizeAttempts(deps);
+    expect(s.unassigned.map((a) => a.attemptId)).toEqual(["sub-3"]);
+    expect(s.unassignedTotal).toBe(1);
+    // 割り当て数を持つ受験は、割り当てのアイテムを読みに行かない
+    const checked = ddbMock
+      .commandCalls(QueryCommand)
+      .map((c) => c.args[0].input)
+      .filter((i) => i.KeyConditionExpression === "PK = :pk AND begins_with(SK, :sk)")
+      .map((i) => i.ExpressionAttributeValues?.[":pk"]);
+    expect(checked.sort()).toEqual(["ATTEMPT#sub-1", "ATTEMPT#sub-3"]);
   });
 });
 

@@ -36,7 +36,7 @@ import { getUserBySub, type UserProfile } from "./users.js";
 
 const nowOf = (deps: DataDeps) => deps.now?.() ?? new Date();
 
-/** 一覧の並び：進行中 → 提出済み以降 → 期限切れ → 取消 */
+/** 一覧の並び：状態ごとにまとめる（状態をまたいで期限順に混ぜない）。進行中 → 提出済み以降 → 期限切れ → 取消 */
 const LIST_ORDER: readonly AttemptStatus[] = [
   "IN_PROGRESS",
   "NOT_STARTED",
@@ -201,21 +201,25 @@ export async function summarizeAttempts(deps: DataDeps): Promise<AttemptSummary>
       (["NOT_STARTED", "IN_PROGRESS"] as const).map((stored) =>
         queryAll(
           deps,
+          // 索引のキー（GSI2SK）は Query のフィルタに使えないため、同じ値の deadlineAt で絞り込む
           queryOf(deps, { stored, range: "future" }, at, {
-            filter: "GSI2SK <= :until",
+            filter: "deadlineAt <= :until",
             values: { ":until": until },
           }),
         ),
       ),
     ).then((lists) => lists.flat().sort((a, b) => a.deadlineAt.localeCompare(b.deadlineAt))),
-    // 割り当て数を持たない受験は、まだ一度も割り当てていない（assignGraders が初期化する）
     queryAll(
       deps,
       queryOf(deps, { stored: "SUBMITTED" }, at, {
         filter: "(attribute_not_exists(assignmentCount) OR assignmentCount = :zero)",
         values: { ":zero": 0 },
       }),
-    ).then((list) => list.sort((a, b) => (a.submittedAt ?? "").localeCompare(b.submittedAt ?? ""))),
+    )
+      .then(withoutAssignments(deps))
+      .then((list) =>
+        list.sort((a, b) => (a.submittedAt ?? "").localeCompare(b.submittedAt ?? "")),
+      ),
   ]);
 
   return {
@@ -225,6 +229,32 @@ export async function summarizeAttempts(deps: DataDeps): Promise<AttemptSummary>
     dueSoonTotal: dueSoon.length,
     unassigned: unassigned.slice(0, SUMMARY_ITEMS),
     unassignedTotal: unassigned.length,
+  };
+}
+
+/**
+ * 割り当て数を持たない受験から、割り当てのアイテムがあるものを除く。割り当て数は assignGraders が
+ * 割り当てのときに初期化するが、それより前に割り当てた既存データは持たない（割り当てても、採点を
+ * 始めるまでは SUBMITTED のまま）。割り当て数が 0 の受験はそのまま未割り当てとする
+ */
+function withoutAssignments(deps: DataDeps) {
+  return async (list: AttemptRecord[]): Promise<AttemptRecord[]> => {
+    const assigned = await Promise.all(
+      list.map(async (a) => {
+        if (a.assignmentCount !== undefined) return false;
+        const res = await deps.ddb.send(
+          new QueryCommand({
+            TableName: deps.tableName,
+            KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues: { ":pk": keys.attemptPk(a.attemptId), ":sk": "ASSIGN#" },
+            Select: "COUNT",
+            Limit: 1,
+          }),
+        );
+        return (res.Count ?? 0) > 0;
+      }),
+    );
+    return list.filter((_, i) => !assigned[i]);
   };
 }
 
