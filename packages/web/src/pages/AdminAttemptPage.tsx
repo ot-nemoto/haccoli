@@ -6,7 +6,7 @@ import {
   ASSIGNMENT_STATUS_LABELS,
   type DownloadUrlResponse,
 } from "@haccoli/shared";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { messageOf } from "../api.js";
 import { useApi } from "../auth/useApi.js";
@@ -28,12 +28,18 @@ export function AdminAttemptPage() {
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
 
+  /** 最後に出した読み込み。操作を続けたとき、先に出した読み直しの応答で新しい表示を上書きしない */
+  const latest = useRef(0);
+
   const load = useCallback(async () => {
+    const id = ++latest.current;
     try {
-      setDetail(await api<AdminAttemptDetail>(path));
+      const d = await api<AdminAttemptDetail>(path);
+      if (id !== latest.current) return;
+      setDetail(d);
       setError(undefined);
     } catch (e) {
-      setError(messageOf(e));
+      if (id === latest.current) setError(messageOf(e));
     }
   }, [api, path]);
 
@@ -47,7 +53,11 @@ export function AdminAttemptPage() {
    */
   const done = (message: string, attempt?: AdminAttempt) => {
     setNotice(message);
-    if (attempt) setDetail((prev) => prev && { ...prev, attempt });
+    if (attempt) {
+      // 応答を反映したら、それより前に出した読み直しの結果は使わない
+      latest.current++;
+      setDetail((prev) => prev && { ...prev, attempt });
+    }
     void load();
   };
 

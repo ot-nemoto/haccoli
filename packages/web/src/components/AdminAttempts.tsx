@@ -50,7 +50,14 @@ export function AttemptTable(props: { label: string; items: AdminAttempt[]; now?
               )}
             </td>
             <td>{a.submittedAt ? formatJst(a.submittedAt) : ""}</td>
-            <td>{a.assignmentCount ? `${a.assignmentCount} 人` : "未割り当て"}</td>
+            {/* API は割り当て数を必ず返す（既存データは数えて補う）。無ければ断定しない */}
+            <td>
+              {a.assignmentCount === undefined
+                ? "—"
+                : a.assignmentCount > 0
+                  ? `${a.assignmentCount} 人`
+                  : "未割り当て"}
+            </td>
           </tr>
         ))}
       </tbody>

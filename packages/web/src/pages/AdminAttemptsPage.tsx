@@ -35,6 +35,8 @@ export function AdminAttemptsPage() {
   const [cursor, setCursor] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  /** 課題の一覧の読み込みエラー（受験の一覧の読み込みで消さない） */
+  const [examsError, setExamsError] = useState<string>();
   const [issued, setIssued] = useState<AdminAttempt>();
   const latest = useRef(0);
 
@@ -43,6 +45,11 @@ export function AdminAttemptsPage() {
       const id = ++latest.current;
       setLoading(true);
       setError(undefined);
+      // 絞り込みを変えたら、前の条件の一覧は消す（新しい条件の結果と取り違えない）
+      if (!opts.cursor) {
+        setItems(undefined);
+        setCursor(undefined);
+      }
       try {
         const page = await api<AdminAttemptPage>(withQuery("/admin/attempts", opts));
         if (id !== latest.current) return;
@@ -65,7 +72,9 @@ export function AdminAttemptsPage() {
     let canceled = false;
     api<AdminExam[]>("/admin/exams")
       .then((e) => !canceled && setExams(e))
-      .catch((e) => !canceled && setError(messageOf(e)));
+      .catch(
+        (e) => !canceled && setExamsError(`課題の一覧を読み込めませんでした: ${messageOf(e)}`),
+      );
     return () => {
       canceled = true;
     };
@@ -87,6 +96,11 @@ export function AdminAttemptsPage() {
           {formatJst(issued.deadlineAt)}）。
           <Link to={`/admin/attempts/${encodeURIComponent(issued.attemptId)}`}>詳細を開く</Link>
           。受験の URL（{window.location.origin}/login）を候補者に連絡してください。
+        </p>
+      )}
+      {examsError && (
+        <p role="alert" className="error">
+          {examsError}
         </p>
       )}
       <IssueForm
