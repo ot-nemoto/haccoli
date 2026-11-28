@@ -59,3 +59,25 @@ export interface AuditRecord extends AuditEntry {
   /** FAILED の理由（メールアドレスは伏せる） */
   error?: string;
 }
+
+/** 画面に表示する操作の種類の名前 */
+export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
+  "user.add": "利用者の登録",
+  "user.roles": "ロールの変更",
+  "user.disable": "利用者の無効化",
+  "user.purge": "個人データの削除",
+  "user.migrate-roles": "ロールの移行",
+  "exam.publish": "課題の公開",
+  "attempt.issue": "受験の発行",
+  "attempt.extend": "期限の変更",
+  "attempt.cancel": "受験の取消",
+  "attempt.assign": "採点者の割り当て",
+  "result.export": "採点結果の出力",
+};
+
+export const AUDIT_STATUS_LABELS: Record<AuditStatus, string> = {
+  SUCCEEDED: "成功",
+  FAILED: "失敗",
+  // 結果を記録する前に止まった。対象の状態を確かめる（docs/design.md §14.4）
+  STARTED: "結果不明",
+};

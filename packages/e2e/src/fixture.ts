@@ -21,12 +21,15 @@ import {
   loadExamDir,
   planPurge,
   publishExam,
+  type Role,
   registerUser,
+  removeRole,
   s3FileVersionStore,
   saveGrade,
   type UserProfile,
 } from "@haccoli/core";
 import type { MeResponse } from "@haccoli/shared";
+import type { Browser, Page } from "@playwright/test";
 
 /**
  * dev 環境に対する E2E テストの準備と後片付け。
@@ -39,6 +42,8 @@ import type { MeResponse } from "@haccoli/shared";
 export const EXAM_ID = "sample-2026";
 /** 採点者は削除できない（user:purge は候補者のみ）ため、実行をまたいで使い回す */
 export const GRADER_EMAIL = "e2e-grader@example.com";
+/** 管理画面のテスト用の管理者。dev に常設する（作成は CLI の admin:add。Issue #28） */
+export const ADMIN_EMAIL = "e2e-admin@example.com";
 /** 画面の保存先（packages/web/src/auth/session.ts と合わせる） */
 export const SESSION_KEY = "haccoli.session";
 
@@ -127,16 +132,9 @@ export async function tearDown(ctx: Context, candidateEmail: string): Promise<vo
     }
   }
   // 採点者は残すので、テストで使ったパスワードを使えなくし、リフレッシュトークンも失効させる
-  // （アクセストークンは有効期限の 60 分まで使える。API Gateway の JWT 検証は失効を見ないため）
   if (grader) {
     try {
-      await setPassword(ctx, grader.email, unusablePassword());
-      await ctx.deps.cognito.send(
-        new AdminUserGlobalSignOutCommand({
-          UserPoolId: ctx.deps.userPoolId,
-          Username: grader.email,
-        }),
-      );
+      await lockOut(ctx, grader.email);
     } catch (e) {
       errors.push(e);
     }
@@ -144,6 +142,86 @@ export async function tearDown(ctx: Context, candidateEmail: string): Promise<vo
   if (errors.length > 0) {
     throw new AggregateError(errors, `E2E の後片付けに失敗しました（候補者: ${candidateEmail}）`);
   }
+}
+
+export interface StaffFixture {
+  ctx: Context;
+  webUrl: string;
+  admin: Actor;
+  grader: Actor;
+}
+
+/** 管理画面のテスト用。常設の管理者・採点者のセッションを作る */
+export async function prepareStaff(ctx: Context): Promise<StaffFixture> {
+  const admin = await findUserByEmail(ctx.deps, ADMIN_EMAIL);
+  if (!admin?.roles.includes("admin") || admin.disabled) {
+    throw new Error(
+      `${ADMIN_EMAIL} が有効な管理者ではありません。npm run admin -- -e dev admin:add で登録してください`,
+    );
+  }
+  let grader =
+    (await findUserByEmail(ctx.deps, GRADER_EMAIL)) ??
+    (await registerUser(ctx.deps, { email: GRADER_EMAIL, name: "E2E 採点者", roles: ["grader"] }));
+  if (!grader.roles.includes("grader") || grader.disabled) {
+    throw new Error(`${GRADER_EMAIL} が有効な採点者ではありません`);
+  }
+  // 前回の後片付けが途中で失敗して admin が残っていたら、外してから始める（テストで付与するため）
+  if (grader.roles.includes("admin")) {
+    grader = await removeRole(ctx.deps, { email: GRADER_EMAIL, role: "admin" });
+  }
+  return {
+    ctx,
+    webUrl: process.env.HACCOLI_E2E_BASE_URL || ctx.outputs.WebUrl,
+    admin: { user: admin, session: await sessionFor(ctx, admin, "admin") },
+    grader: { user: grader, session: await sessionFor(ctx, grader, "grader") },
+  };
+}
+
+/**
+ * 管理画面のテストの後片付け。採点者のロールを grader だけに戻し（テストで admin を付与するため）、
+ * 管理者・採点者のパスワードを使えなくする
+ */
+export async function tearDownStaff(ctx: Context): Promise<void> {
+  const errors: unknown[] = [];
+  const grader = await findUserByEmail(ctx.deps, GRADER_EMAIL);
+  if (grader?.roles.includes("admin")) {
+    await removeRole(ctx.deps, { email: GRADER_EMAIL, role: "admin" }).catch((e) => errors.push(e));
+  }
+  for (const email of [ADMIN_EMAIL, GRADER_EMAIL]) {
+    await lockOut(ctx, email).catch((e) => errors.push(e));
+  }
+  if (errors.length > 0) throw new AggregateError(errors, "E2E の後片付けに失敗しました");
+}
+
+/** トークンを sessionStorage に入れた状態で画面を開く（OTP のログインを経ない） */
+export async function openPage(
+  browser: Browser,
+  webUrl: string,
+  session: string,
+  path: string,
+): Promise<{ page: Page; [Symbol.asyncDispose]: () => Promise<void> }> {
+  const context = await browser.newContext({ baseURL: webUrl });
+  await context.addInitScript(
+    ([key, value]) => {
+      if (!sessionStorage.getItem(key)) sessionStorage.setItem(key, value);
+    },
+    [SESSION_KEY, session] as const,
+  );
+  const page = await context.newPage();
+  await page.goto(path);
+  // テストの終わりにコンテキストを閉じる（await using）
+  return { page, [Symbol.asyncDispose]: () => context.close() };
+}
+
+/**
+ * テストで使ったパスワードを使えなくし、リフレッシュトークンも失効させる
+ * （アクセストークンは有効期限の 60 分まで使える。API Gateway の JWT 検証は失効を見ないため）
+ */
+async function lockOut(ctx: Context, email: string): Promise<void> {
+  await setPassword(ctx, email, unusablePassword());
+  await ctx.deps.cognito.send(
+    new AdminUserGlobalSignOutCommand({ UserPoolId: ctx.deps.userPoolId, Username: email }),
+  );
 }
 
 async function settleAttempts(ctx: Context, candidateSub: string): Promise<void> {
@@ -193,13 +271,18 @@ async function settleAttempts(ctx: Context, candidateSub: string): Promise<void>
 }
 
 /** E2E は dev のみ。prod に向けて実行されないよう、環境名を固定する */
-async function devContext(): Promise<Context> {
+export async function devContext(): Promise<Context> {
   const ctx = await createContext("dev");
   if (ctx.env !== "dev") throw new Error("E2E テストは dev 環境でのみ実行できます");
   return ctx;
 }
 
-async function sessionFor(ctx: Context, user: UserProfile): Promise<string> {
+async function sessionFor(
+  ctx: Context,
+  user: UserProfile,
+  // ログインした画面のロール（packages/web/src/auth/session.ts）
+  role: Role = user.roles.includes("candidate") ? "candidate" : "grader",
+): Promise<string> {
   const password = unusablePassword();
   await setPassword(ctx, user.email, password);
   const res = await ctx.deps.cognito.send(
@@ -222,8 +305,7 @@ async function sessionFor(ctx: Context, user: UserProfile): Promise<string> {
       expiresIn: r.ExpiresIn,
     },
     user: me,
-    // ログインした画面のロール（packages/web/src/auth/session.ts）
-    role: user.roles.includes("candidate") ? "candidate" : "grader",
+    role,
     expiresAt: Date.now() + r.ExpiresIn * 1000,
   });
 }

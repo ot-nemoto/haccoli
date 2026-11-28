@@ -1,12 +1,12 @@
 import type { Context } from "@haccoli/admin-cli/context";
-import { type Browser, expect, type Page, test } from "@playwright/test";
+import { type Browser, expect, test } from "@playwright/test";
 import {
   type Actor,
   assignGrader,
   attemptStatus,
   type Fixture,
+  openPage,
   prepare,
-  SESSION_KEY,
   setUp,
   tearDown,
   tinyZip,
@@ -86,22 +86,5 @@ test.describe
     });
   });
 
-/** トークンを sessionStorage に入れた状態で画面を開く（OTP のログインを経ない） */
-async function open(
-  browser: Browser,
-  f: Fixture,
-  actor: Actor,
-  path: string,
-): Promise<{ page: Page; [Symbol.asyncDispose]: () => Promise<void> }> {
-  const context = await browser.newContext({ baseURL: f.webUrl });
-  await context.addInitScript(
-    ([key, value]) => {
-      if (!sessionStorage.getItem(key)) sessionStorage.setItem(key, value);
-    },
-    [SESSION_KEY, actor.session] as const,
-  );
-  const page = await context.newPage();
-  await page.goto(path);
-  // テストの終わりにコンテキストを閉じる（await using）
-  return { page, [Symbol.asyncDispose]: () => context.close() };
-}
+const open = (browser: Browser, f: Fixture, actor: Actor, path: string) =>
+  openPage(browser, f.webUrl, actor.session, path);

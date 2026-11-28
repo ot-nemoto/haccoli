@@ -342,3 +342,129 @@ pre.raw {
   background: #f6f8fa;
   border-radius: 6px;
 }
+
+/* 管理画面 */
+.content.wide {
+  max-width: 1200px;
+}
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  font-weight: 600;
+}
+.nav {
+  display: flex;
+  gap: 1rem;
+  font-weight: normal;
+}
+.nav a {
+  color: #0969da;
+  text-decoration: none;
+  padding: 0.25rem 0;
+}
+.nav a.active {
+  color: #1f2328;
+  font-weight: 600;
+  border-bottom: 2px solid #fd8c73;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: end;
+  margin: 1rem 0;
+}
+label.inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+select {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+}
+.panel {
+  margin: 1rem 0;
+  padding: 1.25rem;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  max-width: 560px;
+}
+.panel h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.role-choices {
+  display: flex;
+  gap: 1rem;
+  margin-left: 1.5rem;
+}
+.confirm-actions,
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+.confirm .confirm-actions {
+  margin-top: 0.75rem;
+}
+.confirm > div:first-of-type {
+  margin-top: 0.5rem;
+}
+button.danger {
+  background: #cf222e;
+}
+button.link.danger-link {
+  color: #cf222e;
+}
+.row-actions {
+  display: flex;
+  gap: 1rem;
+  white-space: nowrap;
+}
+.row-panel .confirm {
+  margin: 0;
+}
+tr.disabled-row td {
+  color: #59636e;
+}
+table.list td.wrap {
+  word-break: break-all;
+}
+table.list.audit td {
+  vertical-align: top;
+  font-size: 0.9rem;
+}
+dl.detail {
+  margin: 0;
+}
+dl.detail div {
+  display: flex;
+  gap: 0.5rem;
+}
+dl.detail dt {
+  color: #59636e;
+  white-space: nowrap;
+}
+dl.detail dd {
+  margin: 0;
+}
+.badge-unknown {
+  background: #fff8c5;
+  border-color: #d4a72c;
+  font-weight: 600;
+}
+fieldset.inline-form {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+table.list tr.row-panel > td {
+  background: #f6f8fa;
+}

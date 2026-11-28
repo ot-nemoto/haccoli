@@ -29,10 +29,11 @@ const program = new Command()
 
 const globals = () => program.opts<{ env: string; yes: boolean }>();
 
-/** 画面のあるロールのログイン URL。管理画面は Step 8 で追加する（docs/design.md §14.7） */
-const LOGIN_PATHS: Partial<Record<Role, string>> = {
+/** ロールごとのログイン URL（docs/design.md §14.7） */
+const LOGIN_PATHS: Record<Role, string> = {
   candidate: "/login",
   grader: "/grader/login",
+  admin: "/admin/login",
 };
 
 function addUserCommands(role: Role, label: string) {
@@ -72,9 +73,7 @@ function addUserCommands(role: Role, label: string) {
         });
         console.log(`登録しました: ${user.name} <${user.email}> (sub: ${user.sub})`);
       }
-      const loginPath = LOGIN_PATHS[role];
-      if (loginPath) console.log(`ログイン URL: ${ctx.outputs.WebUrl}${loginPath}`);
-      else console.log("管理画面は準備中です（Step 8）。");
+      console.log(`ログイン URL: ${ctx.outputs.WebUrl}${LOGIN_PATHS[role]}`);
     });
 
   program

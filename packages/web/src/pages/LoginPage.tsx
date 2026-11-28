@@ -88,7 +88,8 @@ export function LoginPage(props: { userRole: ScreenRole }) {
       <h1>{routes.label} ログイン</h1>
       {state?.reason === "expired" && (
         <p className="notice">
-          ログインの有効期限が切れました。再度ログインしてください。入力途中の回答はこのタブに一時保存されています。
+          ログインの有効期限が切れました。再度ログインしてください。
+          {props.userRole === "candidate" && "入力途中の回答はこのタブに一時保存されています。"}
         </p>
       )}
       {step.kind === "email" ? (
