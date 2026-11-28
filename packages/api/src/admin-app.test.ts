@@ -19,8 +19,9 @@ import {
 import type { FileStore } from "@haccoli/core";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import { mockClient } from "aws-sdk-client-mock";
+import { handle } from "hono/aws-lambda";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createAdminApp } from "./admin-app.js";
+import { adminLambdaOptions, createAdminApp } from "./admin-app.js";
 import { createApp } from "./app.js";
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "ap-northeast-1" }));
@@ -807,9 +808,91 @@ describe("GET /api/admin/exams/:examId/results.csv", () => {
     expect(auditPuts()).toHaveLength(0);
   });
 
+  it("base64 にすると Lambda の上限を超える CSV は 413（そのままの大きさで測ると通ってしまう）", async () => {
+    // CSV は約 3.8 MiB（そのままなら 5 MiB の上限の内側）、base64 にすると約 5.1 MiB
+    const comment = "あ".repeat(Math.ceil((3.8 * 1024 * 1024) / 3));
+    withAttempt({ ...ATT, status: "GRADING" }, [
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "ASSIGN#sub-g",
+        graderSub: "sub-g",
+        graderName: "氏名-sub-g",
+        assignedAt: "a",
+        status: "DRAFT",
+      },
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "GRADE#sub-g",
+        graderSub: "sub-g",
+        items: { q1: { score: 1, comment } },
+        overallComment: "",
+        version: 1,
+        updatedAt: "u",
+      },
+    ]);
+    ddbMock.on(ScanCommand).resolves({ Items: [ATT] });
+    const res = await admin("GET", "/api/admin/exams/ex/results.csv");
+    expect(res.status).toBe(413);
+    expect(auditPuts()).toHaveLength(0);
+  });
+
   it("存在しない課題は 404（出力を記録しない）", async () => {
     withAttempt();
     expect((await admin("GET", "/api/admin/exams/nope/results.csv")).status).toBe(404);
     expect(auditPuts()).toHaveLength(0);
+  });
+});
+
+describe("管理者 API の Lambda（hono/aws-lambda を通す）", () => {
+  /** API Gateway（HTTP API）から Lambda に届くイベント */
+  const lambdaEvent = (path: string) =>
+    ({
+      version: "2.0",
+      routeKey: "ANY /api/admin/{proxy+}",
+      rawPath: path,
+      rawQueryString: "",
+      headers: { host: "example.execute-api.ap-northeast-1.amazonaws.com" },
+      isBase64Encoded: false,
+      requestContext: {
+        domainName: "example.execute-api.ap-northeast-1.amazonaws.com",
+        http: { method: "GET", path, protocol: "HTTP/1.1", sourceIp: "127.0.0.1", userAgent: "t" },
+        authorizer: { jwt: { claims: ADMIN, scopes: [] } },
+        requestId: "r",
+        routeKey: "ANY /api/admin/{proxy+}",
+        stage: "$default",
+        time: "",
+        timeEpoch: 0,
+      },
+    }) as unknown as Parameters<ReturnType<typeof handle>>[0];
+
+  it("採点結果の CSV は base64 で返し、先頭の BOM を残す（テキストで返すとアダプターが BOM を取り除く）", async () => {
+    withAttempt({ ...ATT, status: "SUBMITTED" });
+    ddbMock.on(ScanCommand).resolves({ Items: [ATT] });
+    const handler = handle(createAdminApp(deps), adminLambdaOptions);
+    const res = (await handler(lambdaEvent("/api/admin/exams/ex/results.csv"))) as {
+      statusCode: number;
+      body: string;
+      isBase64Encoded: boolean;
+      headers: Record<string, string>;
+    };
+    expect(res.statusCode).toBe(200);
+    expect(res.isBase64Encoded).toBe(true);
+    expect(res.headers["content-type"]).toBe("text/csv; charset=utf-8");
+    const bytes = Buffer.from(res.body, "base64");
+    expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(bytes.toString("utf8")).toContain("attemptId,examVersion,candidateName");
+  });
+
+  it("JSON の応答は、これまでどおりテキストで返す", async () => {
+    ddbMock.on(ScanCommand).resolves({ Items: [] });
+    const handler = handle(createAdminApp(deps), adminLambdaOptions);
+    const res = (await handler(lambdaEvent("/api/admin/exams"))) as {
+      statusCode: number;
+      body: string;
+      isBase64Encoded: boolean;
+    };
+    expect(res.statusCode).toBe(200);
+    expect(res.isBase64Encoded).toBe(false);
+    expect(JSON.parse(res.body)).toEqual([]);
   });
 });

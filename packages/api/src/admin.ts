@@ -254,8 +254,8 @@ export function adminRoutes(deps: AdminApiDeps) {
     const { csv } = await exportResultsCsv(as(c), examId, {
       maxAttempts: MAX_CSV_ATTEMPTS,
       maxBytes: MAX_CSV_BYTES,
-      // 応答は JSON にして Lambda から返すため、改行・引用符のエスケープを含めた大きさで測る
-      measure: (x) => Buffer.byteLength(JSON.stringify(x)),
+      // BOM を残すため、Lambda からは base64 にして返す（adminLambdaOptions）。base64 にした大きさで測る
+      measure: (x) => Math.ceil(Buffer.byteLength(x) / 3) * 4,
     });
     return c.body(csv, 200, {
       "Content-Type": "text/csv; charset=utf-8",
@@ -267,8 +267,8 @@ export function adminRoutes(deps: AdminApiDeps) {
 }
 
 /**
- * 画面から出力できる CSV の上限。Lambda の応答（HTTP API）は JSON にした大きさで 6 MB までのため、
- * 余裕を持たせる。受験数の上限は、Lambda の時間の上限（25 秒）に収めるため。超える場合は CLI で出力する
+ * 画面から出力できる CSV の上限。Lambda の応答（HTTP API）は 6 MB までのため、base64 にした CSV で
+ * 5 MB（CSV で約 3.7 MB）までにする。受験数の上限は、Lambda の時間の上限（25 秒）に収めるため。超える場合は CLI で出力する
  */
 const MAX_CSV_BYTES = 5 * 1024 * 1024;
 const MAX_CSV_ATTEMPTS = 1000;
