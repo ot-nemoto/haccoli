@@ -1,5 +1,6 @@
 import {
   type Actor,
+  type AttemptStatus,
   AUDIT_ACTION_LABELS,
   type AuditDetail,
   type AuditTarget,
@@ -7,6 +8,7 @@ import {
   type Role,
   type StaffRole,
 } from "@haccoli/shared";
+import { formatJst } from "./format.js";
 
 /** 管理画面の表示・リクエストの組み立て（docs/design.md §14.7） */
 
@@ -53,10 +55,37 @@ const DETAIL_LABELS: Record<string, string> = {
   rolesBefore: "変更前",
   rolesAfter: "変更後",
   changed: "変更あり",
+  candidateSub: "候補者",
+  graderSub: "採点者",
+  examId: "課題",
+  examVersion: "版",
+  version: "版",
+  title: "題名",
+  deadlineAt: "期限",
+  deadlineBefore: "変更前の期限",
+  deadlineAfter: "変更後の期限",
+  statusBefore: "変更前の状態",
+  statusAfter: "変更後の状態",
+  attempts: "受験数",
+  rows: "行数",
+  attemptIds: "受験",
+  migrated: "移行した件数",
+  skipped: "移行しなかった件数",
 };
 
-/** 内容の表示。ロールは表示名にし、DETAIL_LABELS の順（その他は後ろ）に並べる */
-export function detailEntries(detail: AuditDetail | undefined): [string, string][] {
+const ROLE_KEYS = ["roles", "added", "removed", "rolesBefore", "rolesAfter"];
+const USER_KEYS = ["candidateSub", "graderSub"];
+const DATE_KEYS = ["deadlineAt", "deadlineBefore", "deadlineAfter"];
+const STATUS_KEYS = ["statusBefore", "statusAfter"];
+
+/**
+ * 内容の表示。ロール・状態は表示名、期限は JST の日時、利用者の sub は氏名（引けたとき）にし、
+ * DETAIL_LABELS の順（その他は後ろ）に並べる
+ */
+export function detailEntries(
+  detail: AuditDetail | undefined,
+  names: Map<string, string> = new Map(),
+): [string, string][] {
   const order = Object.keys(DETAIL_LABELS);
   const rank = (k: string) => (order.includes(k) ? order.indexOf(k) : order.length);
   return Object.entries(detail ?? {})
@@ -64,12 +93,53 @@ export function detailEntries(detail: AuditDetail | undefined): [string, string]
     .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
     .map(([k, v]) => {
       const label = DETAIL_LABELS[k] ?? k;
-      const roleLike = ["roles", "added", "removed", "rolesBefore", "rolesAfter"].includes(k);
-      const text = (x: string) => (roleLike ? (ROLE_LABELS[x as Role] ?? x) : x);
+      const text = (x: string) => {
+        if (ROLE_KEYS.includes(k)) return ROLE_LABELS[x as Role] ?? x;
+        if (STATUS_KEYS.includes(k)) return ADMIN_STATUS_LABELS[x as AttemptStatus] ?? x;
+        if (DATE_KEYS.includes(k)) return formatJst(x);
+        if (USER_KEYS.includes(k)) return names.has(x) ? `${names.get(x)}（${x}）` : x;
+        return x;
+      };
       if (Array.isArray(v)) return [label, v.map(text).join("・")];
       if (typeof v === "boolean") return [label, v ? "はい" : "いいえ"];
       return [label, text(String(v))];
     });
+}
+
+// ---- 受験 ----
+
+/**
+ * 管理画面の状態の表示名。候補者の画面（ATTEMPT_STATUS_LABELS）と違い、提出後の採点の進み具合を
+ * 区別する
+ */
+export const ADMIN_STATUS_LABELS: Record<AttemptStatus, string> = {
+  NOT_STARTED: "未着手",
+  IN_PROGRESS: "回答中",
+  SUBMITTED: "提出済み",
+  GRADING: "採点中",
+  GRADED: "採点完了",
+  EXPIRED: "期限切れ（未提出）",
+  CANCELED: "取消",
+};
+
+/** 期限を変更できる状態（attempt:extend と同じ。期限切れからも戻せる） */
+export const canExtend = (s: AttemptStatus) =>
+  s === "NOT_STARTED" || s === "IN_PROGRESS" || s === "EXPIRED";
+/** 取り消せる状態（未着手・回答中のみ） */
+export const canCancel = (s: AttemptStatus) => s === "NOT_STARTED" || s === "IN_PROGRESS";
+/** 採点者を割り当てられる状態（期限切れ・取消以外） */
+export const canAssign = (s: AttemptStatus) => s !== "EXPIRED" && s !== "CANCELED";
+
+/** JST の日付（YYYY-MM-DD）。今日から days 日後 */
+export function jstDateAfter(days: number, now: Date = new Date()): string {
+  return new Date(now.getTime() + 9 * 60 * 60 * 1000 + days * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** 期限（ISO）の JST の日付。期限は日付の 23:59:59.999 JST なので、その日になる */
+export function deadlineDateOf(deadlineAt: string): string {
+  return new Date(new Date(deadlineAt).getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 export function actionLabel(action: keyof typeof AUDIT_ACTION_LABELS): string {
