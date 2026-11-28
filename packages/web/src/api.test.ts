@@ -49,6 +49,19 @@ describe("apiFetch", () => {
     });
   });
 
+  it("blob で読むときは、本文をそのまま返す（BOM を残す）。エラーは JSON と同じく扱う", async () => {
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x61]);
+    mockFetch(() => Promise.resolve(new Response(bytes, { status: 200 })));
+    const blob = await apiFetch<Blob>("tok", "/admin/exams/ex/results.csv", {}, "blob");
+    expect([...new Uint8Array(await blob.arrayBuffer())]).toEqual([0xef, 0xbb, 0xbf, 0x61]);
+
+    mockFetch(() => json(404, { error: { code: "NOT_FOUND", message: "課題が見つかりません" } }));
+    await expect(apiFetch("tok", "/admin/exams/x/results.csv", {}, "blob")).rejects.toMatchObject({
+      status: 404,
+      message: "課題が見つかりません",
+    });
+  });
+
   it("JSON 以外のエラー本文は INTERNAL", async () => {
     mockFetch(() => Promise.resolve(new Response("<html>", { status: 502 })));
     await expect(apiFetch("tok", "/me")).rejects.toMatchObject({ status: 502, code: "INTERNAL" });
