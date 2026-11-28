@@ -129,6 +129,8 @@ export async function saveExamDraft(
     version: number;
     /** 元にした版を、今の最新版に付け替える（最新版の内容から作り直したとき） */
     rebase?: boolean;
+    /** 下書きを初めて作るとき（version 0）、画面が編集を始めた公開版 */
+    startedFrom?: number;
     create?: boolean;
     editor: Editor;
   },
@@ -146,7 +148,7 @@ export async function saveExamDraft(
 
   // 元にした版はサーバーで決める（画面の値を信じると、新しい版の上書きを防げない）
   //  - 新しい課題：0（未公開）
-  //  - 下書きを初めて作る：今の最新版
+  //  - 下書きを初めて作る：画面が編集を始めた版（省略時は今の最新版）
   //  - 保存し直す：前の下書きの値を引き継ぐ。rebase のときだけ今の最新版に付け替える
   const meta = await getMeta(deps, input.examId);
   let baseVersion = 0;
@@ -159,7 +161,11 @@ export async function saveExamDraft(
     if (!meta) throw new NotFoundError(`課題が見つかりません: ${input.examId}`);
     const latest = latestVersionOf(meta);
     if (input.version === 0) {
-      baseVersion = latest;
+      // 編集を始めた後に新しい版が公開されていたら、編集を始めた版を元にしたことにする
+      // （公開を止めて、最新版からの作り直しを促す）。今の最新版より新しい版は無い
+      const started = input.startedFrom ?? latest;
+      if (started > latest) throw new ValidationError("編集を始めた版が不正です");
+      baseVersion = started;
     } else {
       const current = await getDraft(deps, input.examId);
       if (!current || current.version !== input.version) throw new VersionConflictError();

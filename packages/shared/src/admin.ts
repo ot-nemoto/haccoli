@@ -91,6 +91,8 @@ export interface AdminSaveDraftRequest {
   rebase?: boolean;
   /** 新しい課題として作る */
   create?: boolean;
+  /** 下書きを初めて作るとき、画面が編集を始めた公開版（その後に新しい版が公開されていたら作り直しを促す） */
+  startedFrom?: number;
 }
 
 /** PUT /api/admin/exams/{examId}/draft のレスポンス */

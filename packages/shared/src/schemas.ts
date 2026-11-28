@@ -145,6 +145,11 @@ export const adminSaveDraftRequestSchema = z
     version: z.number().int().nonnegative(),
     /** 元にした版を、今の最新版に付け替える（最新版の内容から作り直したとき）。元にした版はサーバーが決める */
     rebase: z.boolean().default(false),
+    /**
+     * 下書きを初めて作るとき（version 0）だけ使う、画面が編集を始めた公開版。編集を始めた後に新しい版が
+     * 公開されていたら、元にした版を古いままにする（公開を止めて作り直しを促す）。省略すると今の最新版
+     */
+    startedFrom: z.number().int().nonnegative().optional(),
     /** 新しい課題として作る（既にある課題 ID なら 409） */
     create: z.boolean().default(false),
   })
