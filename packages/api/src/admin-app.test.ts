@@ -808,6 +808,34 @@ describe("GET /api/admin/exams/:examId/results.csv", () => {
     expect(auditPuts()).toHaveLength(0);
   });
 
+  it("base64 にすると Lambda の上限を超える CSV は 413（そのままの大きさで測ると通ってしまう）", async () => {
+    // CSV は約 3.8 MiB（そのままなら 5 MiB の上限の内側）、base64 にすると約 5.1 MiB
+    const comment = "あ".repeat(Math.ceil((3.8 * 1024 * 1024) / 3));
+    withAttempt({ ...ATT, status: "GRADING" }, [
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "ASSIGN#sub-g",
+        graderSub: "sub-g",
+        graderName: "氏名-sub-g",
+        assignedAt: "a",
+        status: "DRAFT",
+      },
+      {
+        PK: "ATTEMPT#att-1",
+        SK: "GRADE#sub-g",
+        graderSub: "sub-g",
+        items: { q1: { score: 1, comment } },
+        overallComment: "",
+        version: 1,
+        updatedAt: "u",
+      },
+    ]);
+    ddbMock.on(ScanCommand).resolves({ Items: [ATT] });
+    const res = await admin("GET", "/api/admin/exams/ex/results.csv");
+    expect(res.status).toBe(413);
+    expect(auditPuts()).toHaveLength(0);
+  });
+
   it("存在しない課題は 404（出力を記録しない）", async () => {
     withAttempt();
     expect((await admin("GET", "/api/admin/exams/nope/results.csv")).status).toBe(404);
