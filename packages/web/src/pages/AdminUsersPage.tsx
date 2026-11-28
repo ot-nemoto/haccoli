@@ -115,7 +115,12 @@ export function AdminUsersPage() {
                 key={u.sub}
                 user={u}
                 onChanged={replace}
-                onStale={() => void load({ role })}
+                onStale={(message) => {
+                  // 読み直すと、その行が一覧（最初のページ）から外れることがあるため、エラーは一覧の上にも出す
+                  void load({ role }).then(() =>
+                    setError(`${u.name} さんの操作に失敗しました: ${message}`),
+                  );
+                }}
                 onNotice={setNotice}
               />
             ))}
@@ -304,7 +309,7 @@ function UserRow(props: {
   user: AdminUser;
   onChanged: (user: AdminUser) => void;
   /** 操作が失敗し、画面の行がサーバーと食い違っているかもしれない（一覧を読み直す） */
-  onStale: () => void;
+  onStale: (message: string) => void;
   onNotice: (message: string) => void;
 }) {
   const { user } = props;
@@ -325,9 +330,10 @@ function UserRow(props: {
       props.onNotice(message(updated));
       setMode({ kind: "view" });
     } catch (e) {
-      setError(messageOf(e));
+      const message = messageOf(e);
+      setError(message);
       // ロールの変更は付与・削除を 1 つずつ行うため、途中まで反映されていることがある
-      props.onStale();
+      props.onStale(message);
     } finally {
       setBusy(false);
     }
